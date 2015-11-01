@@ -7,6 +7,7 @@ PerlInterpreter *glue_init();
 void glue_fini(pTHX);
 
 SV *glue_eval(pTHX_ char *, SV **);
+SV *glue_call_sv(pTHX_ SV *, SV **, SV **);
 SV *glue_call_method(pTHX_ char *, SV **, SV **);
 
 void glue_inc(pTHX_ SV *);

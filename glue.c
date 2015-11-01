@@ -45,6 +45,35 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     return rv;
 }
 
+SV *glue_call_sv(pTHX_ SV *sv, SV **args, SV **errp) {
+    I32 ax;
+    int i;
+    SV *rv;
+    dSP;
+
+    ENTER;
+    SAVETMPS;
+    PUSHMARK(SP);
+    while(*args)
+        XPUSHs(*args++);
+    PUTBACK;
+    i = call_sv(sv, G_EVAL | G_SCALAR);
+    SPAGAIN;
+    if(SvTRUE(ERRSV)) {
+        *errp = newSVsv(ERRSV);
+    } else {
+        *errp = NULL;
+        rv = POPs;
+        SvREFCNT_inc(rv);
+    }
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+    if(*errp)
+        return NULL;
+    return rv;
+}
+
 SV *glue_call_method(pTHX_
     char *method,
     SV **args,
@@ -61,11 +90,8 @@ SV *glue_call_method(pTHX_
     while(*args)
         XPUSHs(*args++);
     PUTBACK;
-
     i = call_method(method, G_EVAL | G_SCALAR);
-
     SPAGAIN;
-
     if(SvTRUE(ERRSV)) {
         *errp = newSVsv(ERRSV);
     } else {
@@ -73,16 +99,12 @@ SV *glue_call_method(pTHX_
         rv = POPs;
         SvREFCNT_inc(rv);
     }
-
     PUTBACK;
     FREETMPS;
     LEAVE;
-
     free(method);
-
     if(*errp)
         return NULL;
-
     return rv;
 }
 
