@@ -45,33 +45,43 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     return rv;
 }
 
-SV *glue_call_sv(pTHX_ SV *sv, SV **args, SV **errp) {
+SV *glue_call_sv(pTHX_ SV *sv, SV **in, SV **out, int n_out) {
     I32 ax;
-    int i;
-    SV *rv;
+    int count;
+    SV *err;
     dSP;
+    int flags;
+
+    switch(n_out) {
+      case 0: flags |= G_VOID; break;
+      case 1: flags |= G_SCALAR; break;
+      default: flags |= G_ARRAY; break;
+    }
 
     ENTER;
     SAVETMPS;
     PUSHMARK(SP);
-    while(*args)
-        XPUSHs(*args++);
+    while(*in)
+        XPUSHs(*in++);
     PUTBACK;
-    i = call_sv(sv, G_EVAL | G_SCALAR);
+    count = call_sv(sv, G_EVAL | flags);
     SPAGAIN;
+    SP -= count;
+    ax = (SP - PL_stack_base) + 1;
     if(SvTRUE(ERRSV)) {
-        *errp = newSVsv(ERRSV);
+        err = newSVsv(ERRSV);
     } else {
-        *errp = NULL;
-        rv = POPs;
-        SvREFCNT_inc(rv);
+        int i;
+        for(i = 0; i < count && i < n_out; i++) {
+            out[i] = ST(i);
+            SvREFCNT_inc(out[i]);
+        }
+        err = NULL;
     }
     PUTBACK;
     FREETMPS;
     LEAVE;
-    if(*errp)
-        return NULL;
-    return rv;
+    return err;
 }
 
 SV *glue_call_method(pTHX_
@@ -124,6 +134,39 @@ NV glue_getNV(pTHX_ SV *sv) { return SvNV(sv); }
 
 const char *glue_getPV(pTHX_ SV *sv, STRLEN *len) { return SvPV(sv, *len); }
 
+bool glue_walkAV(pTHX_ SV *sv, void *data) {
+    if(SvROK(sv)) {
+        AV *av = (AV *)SvRV(sv);
+        if(SvTYPE((SV *)av) == SVt_PVAV) {
+            I32 i = 0;
+            SAVETMPS;
+            SV **eltp;
+            while(eltp = av_fetch(av, i++, 0))
+                glue_stepAV(data, *eltp);
+            FREETMPS;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+bool glue_walkHV(pTHX_ SV *sv, void *data) {
+    if(SvROK(sv)) {
+        HV *hv = (HV *)SvRV(sv);
+        if(SvTYPE((SV *)hv) == SVt_PVHV) {
+            HE *he;
+            SV *key, *val;
+            SAVETMPS;
+            hv_iterinit(hv);
+            while(he = hv_iternext(hv))
+                glue_stepHV(data, HeSVKEY_force(he), HeVAL(he));
+            FREETMPS;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 SV *glue_newBool(pTHX_ bool v) { return boolSV(v); }
 
 SV *glue_newIV(pTHX_ IV v) { return newSViv(v); }
@@ -153,6 +196,10 @@ SV *glue_newHV(pTHX_ SV **elts) {
         hv_store_ent(hv, k, v, 0);
     }
     return newRV_inc((SV *)hv);
+}
+
+SV *glue_newRV(pTHX_ SV *sv) {
+    return newRV_inc(sv);
 }
 
 static MGVTBL glue_vtbl = { 0, 0, 0, 0, 0, 0, 0, 0 };

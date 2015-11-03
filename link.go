@@ -21,16 +21,48 @@ type sv_t struct {
 	sv *C.SV
 }
 
-func New() pl_t {
-	var self pl_t
+func New() (self *pl_t) {
+	self = new(pl_t)
 	self.thx = C.glue_init()
-	runtime.SetFinalizer(&self, func(dest *pl_t) {
+	runtime.SetFinalizer(self, func(dest *pl_t) {
 		C.glue_fini(dest.thx)
 	})
 	return self
 }
 
-func (pl pl_t) svOfValue(src reflect.Value) *C.SV {
+func (pl *pl_t) eval(text string, args []interface{}) (rv *sv_t, err *sv_t) {
+	/* to get this to a point it will set up @_ we need to do the exec
+	 * in two steps eval("sub { ... }")->(...)
+	 * this is somewhat nice because this will let us separate "compile"
+	 * and "run" time errors. */
+	var e_sv *C.SV
+	lst := make([]*C.SV, 1+len(args))
+	for i, arg := range args {
+		lst[i] = pl.svOf(arg)
+	}
+	cv := C.glue_eval(pl.thx, C.CString("sub {"+text+"}"), &e_sv)
+	if e_sv == nil {
+		var out *C.SV
+		e_sv = C.glue_call_sv(pl.thx, cv, &lst[0], &out, 1)
+		rv = pl.new(out)
+	}
+	err = pl.new(e_sv)
+	return
+}
+
+func (pl *pl_t) Eval(text string, args ...interface{}) (*sv_t, *sv_t) {
+	return pl.eval(text, args)
+}
+
+func (pl *pl_t) MustEval(text string, args ...interface{}) (rv *sv_t) {
+	rv, err := pl.eval(text, args)
+	if err != nil {
+		panic(err)
+	}
+	return
+}
+
+func (pl *pl_t) svOfValue(src reflect.Value) *C.SV {
 	switch src.Kind() {
 	case reflect.Bool:
 		return pl.svOf(src.Bool())
@@ -74,7 +106,7 @@ func (pl pl_t) svOfValue(src reflect.Value) *C.SV {
 	return nil
 }
 
-func (pl pl_t) svOf(val interface{}) *C.SV {
+func (pl *pl_t) svOf(val interface{}) *C.SV {
 	// handle some basic types and use reflect to handle the rest.
 	// I'm assuming that the type switch is a bit faster than the
 	// reflection interface where it's an option.
@@ -112,64 +144,176 @@ func (pl pl_t) svOf(val interface{}) *C.SV {
 	}
 }
 
-// the public SV constructor retain which THX it came from
-func (pl pl_t) SV(val interface{}) *sv_t {
-	var sv *C.SV
-	switch val.(type) {
-	case *C.SV:
-		sv = val.(*C.SV)
-		if sv == nil {
-			return nil
-		}
-		C.glue_inc(pl.thx, sv)
-	default:
-		sv = pl.svOf(val)
+// the wrap remembers which thx this SV came from
+func (pl *pl_t) new(sv *C.SV) (self *sv_t) {
+	if sv != nil {
+		self = new(sv_t)
+		self.pl = pl
+		self.sv = sv;
+		runtime.SetFinalizer(self, func(dest *sv_t) {
+			C.glue_dec(dest.pl.thx, dest.sv)
+		})
 	}
-	self := new(sv_t)
-	self.pl = &pl
-	self.sv = sv
-	runtime.SetFinalizer(self, func(dest *sv_t) {
-		C.glue_dec(dest.pl.thx, dest.sv)
-	})
-	return self
-}
-
-func (pl pl_t) eval(text string, args []interface{}) (rv *sv_t, err *sv_t) {
-	/* to get this to a point it will set up @_ we need to do the exec
-	 * in two steps eval("sub { ... }")->(...)
-	 * this is somewhat nice because this will let us separate "compile"
-	 * and "run" time errors. */
-	var e_sv *C.SV
-	lst := make([]*C.SV, 1+len(args))
-	for i, arg := range args {
-		lst[i] = pl.svOf(arg)
-	}
-	cv := C.glue_eval(pl.thx, C.CString("sub {"+text+"}"), &e_sv)
-	if e_sv == nil {
-		rv = pl.SV(C.glue_call_sv(pl.thx, cv, &lst[0], &e_sv))
-	}
-	err = pl.SV(e_sv)
 	return
 }
 
-func (pl pl_t) Eval(text string, args ...interface{}) (*sv_t, *sv_t) {
-	return pl.eval(text, args)
+func (pl *pl_t) New(val interface{}) *sv_t {
+	return pl.new(pl.svOf(val))
 }
 
-func (pl pl_t) MustEval(text string, args ...interface{}) (rv *sv_t) {
-	rv, err := pl.eval(text, args)
+func (pl *pl_t) Sub(fptr interface{}, defn string) error {
+	var e_sv *C.SV
+	cv := C.glue_eval(pl.thx, C.CString("sub {"+defn+"}"), &e_sv)
+	if e_sv != nil {
+		return pl.new(e_sv)
+	}
+	fn := reflect.ValueOf(fptr).Elem()
+	ty := fn.Type()
+	wrap := func(in []reflect.Value) []reflect.Value {
+		in_sv := make([]*C.SV, 1 + ty.NumIn())
+		for i, val := range in {
+			in_sv[i] = pl.svOfValue(val)
+		}
+		out_sv := make([]*C.SV, ty.NumOut())
+		// TODO: do something with errsv return
+		C.glue_call_sv(pl.thx, cv, &in_sv[0], &out_sv[0], C.int(ty.NumOut()))
+		out := make([]reflect.Value, ty.NumOut())
+		for i, sv := range out_sv {
+			out[i] = pl.valueOfSV(sv, ty.Out(i))
+		}
+		return out
+	}
+	v := reflect.MakeFunc(ty, wrap)
+	fn.Set(v)
+	return nil
+}
+
+//export glue_stepHV
+func glue_stepHV(cb unsafe.Pointer, key *C.SV, val *C.SV) {
+    (*(*func(*C.SV, *C.SV))(cb))(key, val)
+}
+
+//export glue_stepAV
+func glue_stepAV(cb unsafe.Pointer, sv *C.SV) {
+    (*(*func(*C.SV))(cb))(sv)
+}
+
+func (pl *pl_t) valueOfSV(src *C.SV, ty reflect.Type) reflect.Value {
+	switch ty.Kind() {
+	case reflect.Bool:
+		return reflect.ValueOf(bool(C.glue_getBool(pl.thx, src)))
+	case reflect.Int:
+		return reflect.ValueOf(int(C.glue_getIV(pl.thx, src)))
+	case reflect.Int8:
+		return reflect.ValueOf(int8(C.glue_getIV(pl.thx, src)))
+	case reflect.Int16:
+		return reflect.ValueOf(int16(C.glue_getIV(pl.thx, src)))
+	case reflect.Int32:
+		return reflect.ValueOf(int32(C.glue_getIV(pl.thx, src)))
+	case reflect.Int64:
+		return reflect.ValueOf(int64(C.glue_getIV(pl.thx, src)))
+	case reflect.Uint:
+		return reflect.ValueOf(uint(C.glue_getUV(pl.thx, src)))
+	case reflect.Uint8:
+		return reflect.ValueOf(uint8(C.glue_getUV(pl.thx, src)))
+	case reflect.Uint16:
+		return reflect.ValueOf(uint16(C.glue_getUV(pl.thx, src)))
+	case reflect.Uint32:
+		return reflect.ValueOf(uint32(C.glue_getUV(pl.thx, src)))
+	case reflect.Uint64:
+		return reflect.ValueOf(uint64(C.glue_getUV(pl.thx, src)))
+//	case reflect.Uintptr:
+	case reflect.Float32:
+		return reflect.ValueOf(float32(C.glue_getNV(pl.thx, src)))
+	case reflect.Float64:
+		return reflect.ValueOf(float32(C.glue_getNV(pl.thx, src)))
+//	case reflect.Complex64:
+//	case reflect.Complex128:
+//	case reflect.Array:
+//	case reflect.Chan:
+//	case reflect.Func:
+//		// careful here, the pl_t encapsulation seems delicate
+//		pv := reflect.ValueOf(pl)
+//		return C.glue_newCV(pl.thx, unsafe.Pointer(&src), unsafe.Pointer(&pv))
+//	case reflect.Interface:
+	case reflect.Map:
+		dst := reflect.MakeMap(ty)
+		cb := func(key *C.SV, val *C.SV) {
+			dst.SetMapIndex(pl.valueOfSV(key, ty.Key()), pl.valueOfSV(val, ty.Elem()))
+		}
+		if C.glue_walkHV(pl.thx, src, unsafe.Pointer(&cb)) {
+			return dst
+		}
+//	case reflect.Ptr:
+	case reflect.Slice:
+		dst := reflect.MakeSlice(ty, 0, 0)
+		cb := func(sv *C.SV) {
+			dst = reflect.Append(dst, pl.valueOfSV(sv, ty.Elem()))
+		}
+		if C.glue_walkAV(pl.thx, src, unsafe.Pointer(&cb)) {
+			return dst
+		}
+	case reflect.String:
+		var len C.STRLEN
+		cs := C.glue_getPV(pl.thx, src, &len)
+		return reflect.ValueOf(C.GoStringN(cs, C.int(len)))
+//	case reflect.Struct:
+//	case reflect.UnsafePointer:
+	}
+	panic("unhandled type \"" + ty.Kind().String() + "\"")
+	return reflect.ValueOf(nil)
+}
+
+// an sv_t should have an interface as similar to a reflect.Value as is
+// practical to mimic...
+func (src *sv_t) Addr() *sv_t {
+	return src.pl.new(C.glue_newRV(src.pl.thx, src.sv))
+}
+
+func (src *sv_t) Bool() bool {
+	return bool(C.glue_getBool(src.pl.thx, src.sv))
+}
+
+func (src *sv_t) Bytes() []byte {
+	return []byte(src.String())
+}
+
+//func (src *sv_t) Call(in []Value) []Value
+//func (src *sv_t) Call(in []*sv_t) []*sv_t {
+//	var e_sv *C.SV
+//	in_sv := make([]*C.SV, 1 + len(in));
+//	for i, arg : range in {
+//		lst[i] = sv.sv
+//	}
+//	
+//}
+//
+
+func (s *sv_t) call(name string, args []interface{}) (rv *sv_t, err *sv_t) {
+	var e_sv *C.SV
+	lst := make([]*C.SV, 2+len(args))
+	lst[0] = s.sv
+	for i, arg := range args {
+		lst[i+1] = s.pl.svOf(arg)
+	}
+	rv = s.pl.new(C.glue_call_method(s.pl.thx, C.CString(name), &lst[0], &e_sv))
+	err = s.pl.new(e_sv)
+	return
+}
+
+func (s *sv_t) MCall(name string, args ...interface{}) (*sv_t, *sv_t) {
+	return s.call(name, args)
+}
+
+func (s *sv_t) MustMCall(name string, args ...interface{}) (rv *sv_t) {
+	rv, err := s.call(name, args)
 	if err != nil {
 		panic(err)
 	}
 	return
 }
 
-// an sv_t should have an interface as similar to a reflect.Value as is
-// practical to mimic...
-//func (src *sv_t) Addr() *sv_t
-//func (src *sv_t) Bool() bool
-//func (src *sv_t) Bytes() []byte
-//func (src *sv_t) Call(in []Value) []Value
+
 //func (src *sv_t) CallSlice(in []Value) []Value
 //func (src *sv_t) CanAddr() bool
 //func (src *sv_t) CanInterface() bool
@@ -178,11 +322,6 @@ func (pl pl_t) MustEval(text string, args ...interface{}) (rv *sv_t) {
 //func (src *sv_t) Close()
 //func (src *sv_t) Complex() complex128
 //func (src *sv_t) Convert(t Type) *sv_t
-
-
-func (src *sv_t) Bool() bool {
-	return bool(C.glue_getBool(src.pl.thx, src.sv))
-}
 
 func (src *sv_t) String() string {
 	var len C.STRLEN
@@ -204,30 +343,6 @@ func (src *sv_t) Float() float64 {
 
 func (src *sv_t) Error() string {
 	return src.String()
-}
-
-func (s *sv_t) call(name string, args []interface{}) (rv *sv_t, err *sv_t) {
-	var e_sv *C.SV
-	lst := make([]*C.SV, 2+len(args))
-	lst[0] = s.sv
-	for i, arg := range args {
-		lst[i+1] = s.pl.svOf(arg)
-	}
-	rv = s.pl.SV(C.glue_call_method(s.pl.thx, C.CString(name), &lst[0], &e_sv))
-	err = s.pl.SV(e_sv)
-	return
-}
-
-func (s *sv_t) Call(name string, args ...interface{}) (*sv_t, *sv_t) {
-	return s.call(name, args)
-}
-
-func (s *sv_t) MustCall(name string, args ...interface{}) (rv *sv_t) {
-	rv, err := s.call(name, args)
-	if err != nil {
-		panic(err)
-	}
-	return
 }
 
 func (src *sv_t) asValue(ty reflect.Type) reflect.Value {
@@ -280,7 +395,7 @@ func (src *sv_t) asValue(ty reflect.Type) reflect.Value {
 //export go_invoke
 func go_invoke(call *interface{}, data *interface{}, n int, args_raw unsafe.Pointer) **C.SV {
 	// recover the thx wrap
-	pl := (*data).(pl_t)
+	pl := (*data).(*pl_t)
 
 	// learn about the callback we're about to make
 	cb := reflect.ValueOf(*call)
@@ -294,7 +409,7 @@ func go_invoke(call *interface{}, data *interface{}, n int, args_raw unsafe.Poin
 	}))
 	args := make([]reflect.Value, n)
 	for i, sv := range args_sv {
-		args[i] = pl.SV(sv).asValue(ty.In(i))
+		args[i] = pl.new(sv).asValue(ty.In(i))
 	}
 
 	// dispatch the call
