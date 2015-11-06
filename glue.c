@@ -38,8 +38,19 @@ void glue_fini(pTHX) {
 }
 
 SV *glue_eval(pTHX_ char *text, SV **errp) {
-    SV *rv = eval_pv(text, FALSE);
-    *errp = SvTRUE(ERRSV) ?  newSVsv(ERRSV) : NULL;
+    SV *rv;
+    ENTER;
+    SAVETMPS;
+    rv = eval_pv(text, FALSE);
+    if(SvTRUE(ERRSV)) {
+        croak(SvPV_nolen(ERRSV));
+        *errp = newSVsv(ERRSV);
+    } else {
+        *errp = NULL;
+    }
+    SvREFCNT_inc(rv);
+    FREETMPS;
+    LEAVE;
     free(text);
     return rv;
 }
@@ -61,7 +72,7 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **in, SV **out, int n_out) {
     SAVETMPS;
     PUSHMARK(SP);
     while(*in)
-        XPUSHs(*in++);
+        mXPUSHs(*in++);
     PUTBACK;
     count = call_sv(sv, G_EVAL | flags);
     SPAGAIN;
@@ -97,7 +108,7 @@ SV *glue_call_method(pTHX_
     SAVETMPS;
     PUSHMARK(SP);
     while(*args)
-        XPUSHs(*args++);
+        mXPUSHs(*args++);
     PUTBACK;
     i = call_method(method, G_EVAL | G_SCALAR);
     SPAGAIN;
@@ -117,15 +128,40 @@ SV *glue_call_method(pTHX_
     return rv;
 }
 
-void glue_inc(pTHX_ SV *sv) { SvREFCNT_inc(sv); }
+void glue_inc(pTHX_ SV *sv) {
+    //warn("refcnt_inc(%p)\n", sv);
+    SvREFCNT_inc(sv);
+}
 
-void glue_dec(pTHX_ SV *sv) { SvREFCNT_dec(sv); }
+void glue_dec(pTHX_ SV *sv) {
+    //warn("refcnt_dec(%p)\n", sv);
+    if(SvREFCNT(sv)) {
+        SvREFCNT_dec(sv);
+    } else {
+        croak("refcnt_dec on already freed sv");
+    }
+}
 
 SV *glue_undef(pTHX) { return &PL_sv_undef; }
 
 void glue_sv_dump(pTHX_ SV *sv) { sv_dump(sv); }
 
 bool glue_SvOK(pTHX_ SV *sv) { return SvOK(sv); }
+
+
+int glue_count_live(pTHX) {
+    /* Devel::Leak proved to be too expensive to run during scans, so
+     * this lifts a bit of it's algorithm for something to give us
+     * simple live variable allocation counts */
+    SV *sva;
+    int i, n;
+    int rv = 0;
+    for(sva = PL_sv_arenaroot; sva; sva = (SV *)SvANY(sva))
+        for(i = 1, n = SvREFCNT(sva); i < n; i++)
+            if(SvTYPE(sva + i) != SVTYPEMASK)
+                rv++;
+    return rv;
+}
 
 bool glue_getBool(pTHX_ SV *sv) { return SvTRUE(sv); }
 

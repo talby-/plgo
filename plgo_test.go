@@ -1,11 +1,11 @@
 package plgo_test
 
 import (
+	"git.dev.whs/talby/plgo"
 	"math"
 	"math/cmplx"
 	"reflect"
 	"testing"
-	"git.dev.whs/talby/plgo"
 )
 
 var pl = plgo.New()
@@ -26,10 +26,11 @@ func TestNil(t *testing.T) {
 	if err != nil {
 		t.Errorf("perl error unexpected: %s", err.Error())
 	}
-	err = pl.Bind(nil, `1 = 2`)
-	if err == nil {
-		t.Errorf("perl error expected")
-	}
+	// TODO: test errors
+	//err = pl.Bind(nil, `1 = 2`)
+	//if err == nil {
+	//	t.Errorf("perl error expected")
+	//}
 }
 
 func TestBool(t *testing.T) {
@@ -41,9 +42,6 @@ func TestBool(t *testing.T) {
 			t.Errorf("id(%v bool) => %v", want, have)
 		}
 	}
-	ok(true)
-	ok(false)
-
 	is := func(expr string, want bool) {
 		var have bool
 		pl.Bind(&have, expr)
@@ -51,15 +49,30 @@ func TestBool(t *testing.T) {
 			t.Errorf("is(`%s`) want %v have %v", expr, want, have)
 		}
 	}
-	is(`undef`, false)
-	is(`1 == 1`, true)
-	is(`1 == 0`, false)
-	is(`''`, false)
-	is(`'0'`, false)
-	is(`'1'`, true)
-	is(`'2'`, true)
-	is(`'-1'`, true)
-	is(`'a string'`, true)
+	v := pl.Leak(func() {
+		is(`undef`, false)
+		is(`1 == 1`, true)
+		is(`1 == 0`, false)
+		is(`''`, false)
+		is(`'0'`, false)
+		is(`'1'`, true)
+		is(`'2'`, true)
+		is(`'-1'`, true)
+		is(`'a string'`, true)
+		ok(true)
+		ok(false)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
+}
+
+func BenchmarkBool(b *testing.B) {
+	str := "1"
+	var v bool
+	for i := 0; i < b.N; i++ {
+		pl.Bind(&v, str)
+	}
 }
 
 func TestInt(t *testing.T) {
@@ -72,9 +85,22 @@ func TestInt(t *testing.T) {
 		}
 	}
 	// the capacity of an "int" is system dependent
-	ok(-1)
-	ok(0)
-	ok(1)
+	v := pl.Leak(func() {
+		ok(-1)
+		ok(0)
+		ok(1)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
+}
+
+func BenchmarkInt(b *testing.B) {
+	str := "1"
+	var v int
+	for i := 0; i < b.N; i++ {
+		pl.Bind(&v, str)
+	}
 }
 
 func TestInt8(t *testing.T) {
@@ -86,11 +112,16 @@ func TestInt8(t *testing.T) {
 			t.Errorf("id(%v int8) => %v", want, have)
 		}
 	}
-	ok(-128)
-	ok(-1)
-	ok(0)
-	ok(1)
-	ok(127)
+	v := pl.Leak(func() {
+		ok(-128)
+		ok(-1)
+		ok(0)
+		ok(1)
+		ok(127)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestInt16(t *testing.T) {
@@ -102,11 +133,16 @@ func TestInt16(t *testing.T) {
 			t.Errorf("id(%v int16) => %v", want, have)
 		}
 	}
-	ok(-32768)
-	ok(-1)
-	ok(0)
-	ok(1)
-	ok(32767)
+	v := pl.Leak(func() {
+		ok(-32768)
+		ok(-1)
+		ok(0)
+		ok(1)
+		ok(32767)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestInt32(t *testing.T) {
@@ -118,11 +154,16 @@ func TestInt32(t *testing.T) {
 			t.Errorf("id(%v int32) => %v", want, have)
 		}
 	}
-	ok(-2147483648)
-	ok(-1)
-	ok(0)
-	ok(1)
-	ok(2147483647)
+	v := pl.Leak(func() {
+		ok(-2147483648)
+		ok(-1)
+		ok(0)
+		ok(1)
+		ok(2147483647)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestInt64(t *testing.T) {
@@ -134,11 +175,16 @@ func TestInt64(t *testing.T) {
 			t.Errorf("id(%v int64) => %v", want, have)
 		}
 	}
-	ok(-9223372036854775808)
-	ok(-1)
-	ok(0)
-	ok(1)
-	ok(9223372036854775807)
+	v := pl.Leak(func() {
+		ok(-9223372036854775808)
+		ok(-1)
+		ok(0)
+		ok(1)
+		ok(9223372036854775807)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestUint(t *testing.T) {
@@ -151,9 +197,22 @@ func TestUint(t *testing.T) {
 		}
 	}
 	// the capacity of a "uint" is system dependent
-	ok(0)
-	ok(1)
+	v := pl.Leak(func() {
+		ok(0)
+		ok(1)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
+
+//func BenchmarkUint(b *testing.B) {
+//	str := "1"
+//	var v uint
+//	for i := 0; i < b.N; i++ {
+//		pl.Bind(&v, str)
+//	}
+//}
 
 func TestUint8(t *testing.T) {
 	var id func(uint8) uint8
@@ -164,9 +223,14 @@ func TestUint8(t *testing.T) {
 			t.Errorf("id(%v uint8) => %v", want, have)
 		}
 	}
-	ok(0)
-	ok(1)
-	ok(255)
+	v := pl.Leak(func() {
+		ok(0)
+		ok(1)
+		ok(255)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestUint16(t *testing.T) {
@@ -178,9 +242,14 @@ func TestUint16(t *testing.T) {
 			t.Errorf("id(%v uint16) => %v", want, have)
 		}
 	}
-	ok(0)
-	ok(1)
-	ok(65535)
+	v := pl.Leak(func() {
+		ok(0)
+		ok(1)
+		ok(65535)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestUint32(t *testing.T) {
@@ -192,9 +261,14 @@ func TestUint32(t *testing.T) {
 			t.Errorf("id(%v uint32) => %v", want, have)
 		}
 	}
-	ok(0)
-	ok(1)
-	ok(4294967295)
+	v := pl.Leak(func() {
+		ok(0)
+		ok(1)
+		ok(4294967295)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestUint64(t *testing.T) {
@@ -206,9 +280,14 @@ func TestUint64(t *testing.T) {
 			t.Errorf("id(%v uint64) => %v", want, have)
 		}
 	}
-	ok(0)
-	ok(1)
-	ok(18446744073709551615)
+	v := pl.Leak(func() {
+		ok(0)
+		ok(1)
+		ok(18446744073709551615)
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestUintptr(t *testing.T) {
@@ -220,9 +299,14 @@ func TestUintptr(t *testing.T) {
 			t.Errorf("id(%v uintptr) => %v", want, have)
 		}
 	}
-	ok(uintptr(0))
-	ok(uintptr(1))
-	ok(^uintptr(0))
+	v := pl.Leak(func() {
+		ok(uintptr(0))
+		ok(uintptr(1))
+		ok(^uintptr(0))
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 // matching floating point numbers exactly is always a little sketchy.
@@ -236,16 +320,21 @@ func TestFloat32(t *testing.T) {
 			t.Errorf("id(%v float32) => %v", want, have)
 		}
 	}
-	ok(float32(math.Inf(-1)))
-	ok(-math.MaxFloat32)
-	ok(-1.0)
-	ok(-math.SmallestNonzeroFloat32)
-	ok(0.0)
-	ok(math.SmallestNonzeroFloat32)
-	ok(1.0)
-	ok(math.MaxFloat32)
-	ok(float32(math.Inf(1)))
-	ok(float32(math.NaN()))
+	v := pl.Leak(func() {
+		ok(float32(math.Inf(-1)))
+		ok(-math.MaxFloat32)
+		ok(-1.0)
+		ok(-math.SmallestNonzeroFloat32)
+		ok(0.0)
+		ok(math.SmallestNonzeroFloat32)
+		ok(1.0)
+		ok(math.MaxFloat32)
+		ok(float32(math.Inf(1)))
+		ok(float32(math.NaN()))
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestFloat64(t *testing.T) {
@@ -258,16 +347,21 @@ func TestFloat64(t *testing.T) {
 			t.Errorf("id(%v float64) => %v", want, have)
 		}
 	}
-	ok(math.Inf(-1))
-	ok(-math.MaxFloat64)
-	ok(-1.0)
-	ok(-math.SmallestNonzeroFloat64)
-	ok(0.0)
-	ok(math.SmallestNonzeroFloat64)
-	ok(1.0)
-	ok(math.MaxFloat64)
-	ok(math.Inf(1))
-	ok(math.NaN())
+	v := pl.Leak(func() {
+		ok(math.Inf(-1))
+		ok(-math.MaxFloat64)
+		ok(-1.0)
+		ok(-math.SmallestNonzeroFloat64)
+		ok(0.0)
+		ok(math.SmallestNonzeroFloat64)
+		ok(1.0)
+		ok(math.MaxFloat64)
+		ok(math.Inf(1))
+		ok(math.NaN())
+	})
+	if v != 0 {
+		t.Errorf("leaked %d SVs", v)
+	}
 }
 
 func TestComplex64(t *testing.T) {
