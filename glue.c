@@ -20,7 +20,6 @@ const char *init_text =
     "1;"\
 ;
 
-
 PerlInterpreter *glue_init() {
     int argc = 3;
     char *argv[] = { "", "-e", "0", NULL };
@@ -39,7 +38,7 @@ void glue_fini(pTHX) {
 }
 
 SV *glue_eval(pTHX_ char *text, SV **errp) {
-    SV *rv = eval_pv(text, TRUE);
+    SV *rv = eval_pv(text, FALSE);
     *errp = SvTRUE(ERRSV) ?  newSVsv(ERRSV) : NULL;
     free(text);
     return rv;
@@ -123,6 +122,10 @@ void glue_inc(pTHX_ SV *sv) { SvREFCNT_inc(sv); }
 void glue_dec(pTHX_ SV *sv) { SvREFCNT_dec(sv); }
 
 SV *glue_undef(pTHX) { return &PL_sv_undef; }
+
+void glue_sv_dump(pTHX_ SV *sv) { sv_dump(sv); }
+
+bool glue_SvOK(pTHX_ SV *sv) { return SvOK(sv); }
 
 bool glue_getBool(pTHX_ SV *sv) { return SvTRUE(sv); }
 

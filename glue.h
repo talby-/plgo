@@ -14,6 +14,8 @@ void glue_inc(pTHX_ SV *);
 void glue_dec(pTHX_ SV *);
 
 SV *glue_undef(pTHX);
+void glue_sv_dump(pTHX_ SV *);
+bool glue_SvOK(pTHX_ SV *);
 
 bool glue_getBool(pTHX_ SV *);
 IV glue_getIV(pTHX_ SV *);
@@ -36,4 +38,3 @@ SV *glue_newAV(pTHX_ SV **);
 SV *glue_newHV(pTHX_ SV **);
 SV *glue_newCV(pTHX_ void *, void *);
 SV *glue_newRV(pTHX_ SV *);
-

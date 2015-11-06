@@ -14,9 +14,15 @@ import (
 
 type pl_t struct {
 	thx *C.PerlInterpreter
+	err *C.SV
 }
 
 type sv_t struct {
+	pl *pl_t
+	sv *C.SV
+}
+
+type SV struct {
 	pl *pl_t
 	sv *C.SV
 }
@@ -30,6 +36,32 @@ func New() (self *pl_t) {
 	return self
 }
 
+func (pl *pl_t) Bind(ptr interface{}, defn string) error {
+	var esv *C.SV
+	sv := C.glue_eval(pl.thx, C.CString(defn), &esv)
+	if esv != nil {
+		return pl.new(esv)
+	}
+	if ptr != nil {
+		val := reflect.ValueOf(ptr).Elem()
+		val.Set(pl.valueOfSV(sv, val.Type()))
+	}
+	return nil
+}
+
+//func (pl *pl_t) NEval(text string) error {
+//	var fp func()
+//	err := pl.Bind(&fp, text)
+//	if err != nil {
+//		return err
+//	}
+//	return fp()
+//	if pl.err != nil {
+//		return pl.new(pl.err)
+//	}
+//	return nil
+//}
+
 func (pl *pl_t) eval(text string, args []interface{}) (rv *sv_t, err *sv_t) {
 	/* to get this to a point it will set up @_ we need to do the exec
 	 * in two steps eval("sub { ... }")->(...)
@@ -38,7 +70,7 @@ func (pl *pl_t) eval(text string, args []interface{}) (rv *sv_t, err *sv_t) {
 	var e_sv *C.SV
 	lst := make([]*C.SV, 1+len(args))
 	for i, arg := range args {
-		lst[i] = pl.svOf(arg)
+		lst[i] = pl.svOfValue(reflect.ValueOf(arg))
 	}
 	cv := C.glue_eval(pl.thx, C.CString("sub {"+text+"}"), &e_sv)
 	if e_sv == nil {
@@ -65,21 +97,32 @@ func (pl *pl_t) MustEval(text string, args ...interface{}) (rv *sv_t) {
 func (pl *pl_t) svOfValue(src reflect.Value) *C.SV {
 	switch src.Kind() {
 	case reflect.Bool:
-		return pl.svOf(src.Bool())
+		return C.glue_newBool(pl.thx, C.bool(src.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return pl.svOf(src.Int())
+		return C.glue_newIV(pl.thx, C.IV(src.Int()))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return pl.svOf(src.Uint())
+		return C.glue_newUV(pl.thx, C.UV(src.Uint()))
 	case reflect.Uintptr:
+		return C.glue_newUV(pl.thx, C.UV(src.Uint()))
 	case reflect.Float32, reflect.Float64:
-		return pl.svOf(src.Float())
-	case reflect.Complex64:
-	case reflect.Complex128:
+		return C.glue_newNV(pl.thx, C.NV(src.Float()))
+	case reflect.Complex64, reflect.Complex128:
+		// TODO: make this actually work
+		var fn func(float64, float64) *SV
+		pl.Bind(&fn, `sub {
+			require Math::Complex;
+			my $rv = Math::Complex->new(0, 0);
+			$rv->_set_cartesian([ @_ ]);
+			return $rv;
+		}`)
+		v := src.Complex()
+		rv := fn(real(v), imag(v))
+		return rv.sv
 	case reflect.Array,
 		reflect.Slice:
 		dst := make([]*C.SV, 1+src.Len())
 		for i := 0; i < src.Len(); i++ {
-			dst[i] = pl.svOf(src.Index(i).Interface())
+			dst[i] = pl.svOfValue(src.Index(i))
 		}
 		return C.glue_newAV(pl.thx, &dst[0])
 	case reflect.Chan:
@@ -97,8 +140,15 @@ func (pl *pl_t) svOfValue(src reflect.Value) *C.SV {
 		}
 		return C.glue_newHV(pl.thx, &dst[0])
 	case reflect.Ptr:
+		// TODO: for now we're only handling *plgo.SV unwrapping
+		var sv *SV
+		if src.Type().AssignableTo(reflect.TypeOf(sv)) {
+			sv = src.Interface().(*SV)
+			return sv.sv
+		}
 	case reflect.String:
-		return pl.svOf(src.String())
+		str := src.String()
+		return C.glue_newPV(pl.thx, C.CString(str), C.STRLEN(len(str)))
 	case reflect.Struct:
 	case reflect.UnsafePointer:
 	}
@@ -106,96 +156,14 @@ func (pl *pl_t) svOfValue(src reflect.Value) *C.SV {
 	return nil
 }
 
-func (pl *pl_t) svOf(val interface{}) *C.SV {
-	// handle some basic types and use reflect to handle the rest.
-	// I'm assuming that the type switch is a bit faster than the
-	// reflection interface where it's an option.
-	switch src := val.(type) {
-	case bool:
-		return C.glue_newBool(pl.thx, C.bool(src))
-	case int:
-		return C.glue_newIV(pl.thx, C.IV(src))
-	case int8:
-		return C.glue_newIV(pl.thx, C.IV(src))
-	case int16:
-		return C.glue_newIV(pl.thx, C.IV(src))
-	case int32:
-		return C.glue_newIV(pl.thx, C.IV(src))
-	case int64:
-		return C.glue_newIV(pl.thx, C.IV(src))
-	case uint:
-		return C.glue_newUV(pl.thx, C.UV(src))
-	case uint8:
-		return C.glue_newUV(pl.thx, C.UV(src))
-	case uint16:
-		return C.glue_newUV(pl.thx, C.UV(src))
-	case uint32:
-		return C.glue_newUV(pl.thx, C.UV(src))
-	case uint64:
-		return C.glue_newUV(pl.thx, C.UV(src))
-	case float32:
-		return C.glue_newNV(pl.thx, C.NV(src))
-	case float64:
-		return C.glue_newNV(pl.thx, C.NV(src))
-	case string:
-		return C.glue_newPV(pl.thx, C.CString(src), C.STRLEN(len(src)))
-	default:
-		return pl.svOfValue(reflect.ValueOf(src))
-	}
-}
-
-// the wrap remembers which thx this SV came from
-func (pl *pl_t) new(sv *C.SV) (self *sv_t) {
-	if sv != nil {
-		self = new(sv_t)
-		self.pl = pl
-		self.sv = sv;
-		runtime.SetFinalizer(self, func(dest *sv_t) {
-			C.glue_dec(dest.pl.thx, dest.sv)
-		})
-	}
-	return
-}
-
-func (pl *pl_t) New(val interface{}) *sv_t {
-	return pl.new(pl.svOf(val))
-}
-
-func (pl *pl_t) Sub(fptr interface{}, defn string) error {
-	var e_sv *C.SV
-	cv := C.glue_eval(pl.thx, C.CString("sub {"+defn+"}"), &e_sv)
-	if e_sv != nil {
-		return pl.new(e_sv)
-	}
-	fn := reflect.ValueOf(fptr).Elem()
-	ty := fn.Type()
-	wrap := func(in []reflect.Value) []reflect.Value {
-		in_sv := make([]*C.SV, 1 + ty.NumIn())
-		for i, val := range in {
-			in_sv[i] = pl.svOfValue(val)
-		}
-		out_sv := make([]*C.SV, ty.NumOut())
-		// TODO: do something with errsv return
-		C.glue_call_sv(pl.thx, cv, &in_sv[0], &out_sv[0], C.int(ty.NumOut()))
-		out := make([]reflect.Value, ty.NumOut())
-		for i, sv := range out_sv {
-			out[i] = pl.valueOfSV(sv, ty.Out(i))
-		}
-		return out
-	}
-	v := reflect.MakeFunc(ty, wrap)
-	fn.Set(v)
-	return nil
-}
-
 //export glue_stepHV
 func glue_stepHV(cb unsafe.Pointer, key *C.SV, val *C.SV) {
-    (*(*func(*C.SV, *C.SV))(cb))(key, val)
+	(*(*func(*C.SV, *C.SV))(cb))(key, val)
 }
 
 //export glue_stepAV
 func glue_stepAV(cb unsafe.Pointer, sv *C.SV) {
-    (*(*func(*C.SV))(cb))(sv)
+	(*(*func(*C.SV))(cb))(sv)
 }
 
 func (pl *pl_t) valueOfSV(src *C.SV, ty reflect.Type) reflect.Value {
@@ -222,46 +190,112 @@ func (pl *pl_t) valueOfSV(src *C.SV, ty reflect.Type) reflect.Value {
 		return reflect.ValueOf(uint32(C.glue_getUV(pl.thx, src)))
 	case reflect.Uint64:
 		return reflect.ValueOf(uint64(C.glue_getUV(pl.thx, src)))
-//	case reflect.Uintptr:
+	case reflect.Uintptr:
+		return reflect.ValueOf(uintptr(C.glue_getUV(pl.thx, src)))
 	case reflect.Float32:
 		return reflect.ValueOf(float32(C.glue_getNV(pl.thx, src)))
 	case reflect.Float64:
-		return reflect.ValueOf(float32(C.glue_getNV(pl.thx, src)))
-//	case reflect.Complex64:
-//	case reflect.Complex128:
-//	case reflect.Array:
-//	case reflect.Chan:
-//	case reflect.Func:
-//		// careful here, the pl_t encapsulation seems delicate
-//		pv := reflect.ValueOf(pl)
-//		return C.glue_newCV(pl.thx, unsafe.Pointer(&src), unsafe.Pointer(&pv))
-//	case reflect.Interface:
+		return reflect.ValueOf(float64(C.glue_getNV(pl.thx, src)))
+	case reflect.Complex64:
+		var fn func(*SV) (float32, float32)
+		pl.Bind(&fn, `sub {
+			require Math::Complex;
+			return(Math::Complex::Re($_[0]), Math::Complex::Im($_[0]));
+		}`)
+		var sv SV
+		sv.pl = pl
+		sv.sv = src
+		re, im := fn(&sv)
+		return reflect.ValueOf(complex64(complex(re, im)))
+	case reflect.Complex128:
+		var fn func(*SV) (float64, float64)
+		pl.Bind(&fn, `sub {
+			require Math::Complex;
+			return(Math::Complex::Re($_[0]), Math::Complex::Im($_[0]));
+		}`)
+		var sv SV
+		sv.pl = pl
+		sv.sv = src
+		re, im := fn(&sv)
+		return reflect.ValueOf(complex(re, im))
+	case reflect.Array:
+	case reflect.Chan:
+	case reflect.Func:
+		return reflect.MakeFunc(ty, func(in []reflect.Value) []reflect.Value {
+			in_sv := make([]*C.SV, 1+ty.NumIn())
+			for i, val := range in {
+				in_sv[i] = pl.svOfValue(val)
+			}
+			out_sv := make([]*C.SV, 1+ty.NumOut())
+			err := C.glue_call_sv(pl.thx, src,
+				&in_sv[0], &out_sv[0], C.int(ty.NumOut()))
+			if err != nil {
+				pl.err = err
+			}
+			out := make([]reflect.Value, ty.NumOut())
+			for i, sv := range out_sv[0:len(out)] {
+				out[i] = pl.valueOfSV(sv, ty.Out(i))
+			}
+			return out
+		})
+	case reflect.Interface:
 	case reflect.Map:
 		dst := reflect.MakeMap(ty)
 		cb := func(key *C.SV, val *C.SV) {
-			dst.SetMapIndex(pl.valueOfSV(key, ty.Key()), pl.valueOfSV(val, ty.Elem()))
+			dst.SetMapIndex(pl.valueOfSV(key, ty.Key()),
+				pl.valueOfSV(val, ty.Elem()))
 		}
-		if C.glue_walkHV(pl.thx, src, unsafe.Pointer(&cb)) {
-			return dst
+		C.glue_walkHV(pl.thx, src, unsafe.Pointer(&cb))
+		return dst
+	case reflect.Ptr:
+		// TODO: for now we're only handling *plgo.SV wrapping
+		var sv *SV
+		if ty.AssignableTo(reflect.TypeOf(sv)) {
+			if !C.glue_SvOK(pl.thx, src) {
+				return reflect.ValueOf(nil)
+			}
+			sv = new(SV)
+			sv.pl = pl
+			sv.sv = src
+			return reflect.ValueOf(sv)
 		}
-//	case reflect.Ptr:
 	case reflect.Slice:
 		dst := reflect.MakeSlice(ty, 0, 0)
 		cb := func(sv *C.SV) {
 			dst = reflect.Append(dst, pl.valueOfSV(sv, ty.Elem()))
 		}
-		if C.glue_walkAV(pl.thx, src, unsafe.Pointer(&cb)) {
-			return dst
-		}
+		C.glue_walkAV(pl.thx, src, unsafe.Pointer(&cb))
+		return dst
 	case reflect.String:
 		var len C.STRLEN
 		cs := C.glue_getPV(pl.thx, src, &len)
 		return reflect.ValueOf(C.GoStringN(cs, C.int(len)))
-//	case reflect.Struct:
-//	case reflect.UnsafePointer:
+	case reflect.Struct:
+	case reflect.UnsafePointer:
 	}
 	panic("unhandled type \"" + ty.Kind().String() + "\"")
 	return reflect.ValueOf(nil)
+}
+
+// the wrap remembers which thx this SV came from
+func (pl *pl_t) new(sv *C.SV) (self *sv_t) {
+	if sv != nil {
+		self = new(sv_t)
+		self.pl = pl
+		self.sv = sv
+		runtime.SetFinalizer(self, func(dest *sv_t) {
+			C.glue_dec(dest.pl.thx, dest.sv)
+		})
+	}
+	return
+}
+
+func (pl *pl_t) New(val interface{}) *sv_t {
+	return pl.new(pl.svOfValue(reflect.ValueOf(val)))
+}
+
+func (sv *SV) Dump() {
+	C.glue_sv_dump(sv.pl.thx, sv.sv)
 }
 
 // an sv_t should have an interface as similar to a reflect.Value as is
@@ -285,7 +319,7 @@ func (src *sv_t) Bytes() []byte {
 //	for i, arg : range in {
 //		lst[i] = sv.sv
 //	}
-//	
+//
 //}
 //
 
@@ -294,7 +328,7 @@ func (s *sv_t) call(name string, args []interface{}) (rv *sv_t, err *sv_t) {
 	lst := make([]*C.SV, 2+len(args))
 	lst[0] = s.sv
 	for i, arg := range args {
-		lst[i+1] = s.pl.svOf(arg)
+		lst[i+1] = s.pl.svOfValue(reflect.ValueOf(arg))
 	}
 	rv = s.pl.new(C.glue_call_method(s.pl.thx, C.CString(name), &lst[0], &e_sv))
 	err = s.pl.new(e_sv)
@@ -312,7 +346,6 @@ func (s *sv_t) MustMCall(name string, args ...interface{}) (rv *sv_t) {
 	}
 	return
 }
-
 
 //func (src *sv_t) CallSlice(in []Value) []Value
 //func (src *sv_t) CanAddr() bool
@@ -345,53 +378,6 @@ func (src *sv_t) Error() string {
 	return src.String()
 }
 
-func (src *sv_t) asValue(ty reflect.Type) reflect.Value {
-	switch ty.Kind() {
-	case reflect.Bool:
-		return reflect.ValueOf(bool(src.Bool()))
-	case reflect.Int:
-		return reflect.ValueOf(int(src.Int()))
-	case reflect.Int8:
-		return reflect.ValueOf(int8(src.Int()))
-	case reflect.Int16:
-		return reflect.ValueOf(int16(src.Int()))
-	case reflect.Int32:
-		return reflect.ValueOf(int32(src.Int()))
-	case reflect.Int64:
-		return reflect.ValueOf(int64(src.Int()))
-	case reflect.Uint:
-		return reflect.ValueOf(uint(src.Uint()))
-	case reflect.Uint8:
-		return reflect.ValueOf(uint8(src.Uint()))
-	case reflect.Uint16:
-		return reflect.ValueOf(uint16(src.Uint()))
-	case reflect.Uint32:
-		return reflect.ValueOf(uint32(src.Uint()))
-	case reflect.Uint64:
-		return reflect.ValueOf(uint64(src.Uint()))
-	case reflect.Uintptr:
-	case reflect.Float32:
-		return reflect.ValueOf(float32(src.Float()))
-	case reflect.Float64:
-		return reflect.ValueOf(float64(src.Float()))
-	case reflect.Complex64:
-	case reflect.Complex128:
-	case reflect.Array:
-	case reflect.Slice:
-	case reflect.Chan:
-	case reflect.Func:
-	case reflect.Interface:
-	case reflect.Map:
-	case reflect.Ptr:
-	case reflect.String:
-		return reflect.ValueOf(string(src.String()))
-	case reflect.Struct:
-	case reflect.UnsafePointer:
-	}
-	panic("unable to convert SV to " + ty.Kind().String() + " Value")
-	return reflect.ValueOf(nil)
-}
-
 //export go_invoke
 func go_invoke(call *interface{}, data *interface{}, n int, args_raw unsafe.Pointer) **C.SV {
 	// recover the thx wrap
@@ -409,7 +395,7 @@ func go_invoke(call *interface{}, data *interface{}, n int, args_raw unsafe.Poin
 	}))
 	args := make([]reflect.Value, n)
 	for i, sv := range args_sv {
-		args[i] = pl.new(sv).asValue(ty.In(i))
+		args[i] = pl.valueOfSV(sv, ty.In(i))
 	}
 
 	// dispatch the call
