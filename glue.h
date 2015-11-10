@@ -37,5 +37,5 @@ SV *glue_newNV(pTHX_ NV);
 SV *glue_newPV(pTHX_ char *, STRLEN);
 SV *glue_newAV(pTHX_ SV **);
 SV *glue_newHV(pTHX_ SV **);
-SV *glue_newCV(pTHX_ void *, void *);
+SV *glue_newCV(pTHX_ void *, IV, IV);
 SV *glue_newRV(pTHX_ SV *);

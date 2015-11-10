@@ -128,19 +128,9 @@ SV *glue_call_method(pTHX_
     return rv;
 }
 
-void glue_inc(pTHX_ SV *sv) {
-    //warn("refcnt_inc(%p)\n", sv);
-    SvREFCNT_inc(sv);
-}
+void glue_inc(pTHX_ SV *sv) { SvREFCNT_inc(sv); }
 
-void glue_dec(pTHX_ SV *sv) {
-    //warn("refcnt_dec(%p)\n", sv);
-    if(SvREFCNT(sv)) {
-        SvREFCNT_dec(sv);
-    } else {
-        croak("refcnt_dec on already freed sv");
-    }
-}
+void glue_dec(pTHX_ SV *sv) { SvREFCNT_dec(sv); }
 
 SV *glue_undef(pTHX) { return &PL_sv_undef; }
 
@@ -224,50 +214,73 @@ SV *glue_newAV(pTHX_ SV **elts) {
     AV *av = newAV();
     while(*elts)
         av_push(av, *elts++);
-    return newRV_inc((SV *)av);
+    return newRV_noinc((SV *)av);
 }
 
 SV *glue_newHV(pTHX_ SV **elts) {
     HV *hv = newHV();
+    SV *rv;
     while(*elts) {
         SV *k = *elts++;
         SV *v = *elts++;
         hv_store_ent(hv, k, v, 0);
+        SvREFCNT_dec(k);
+        // hv_store_ent has taken ownership of v
     }
-    return newRV_inc((SV *)hv);
+    return newRV_noinc((SV *)hv);
 }
 
 SV *glue_newRV(pTHX_ SV *sv) {
     return newRV_inc(sv);
 }
 
-static MGVTBL glue_vtbl = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
+/* this struct holds the callback info */
 typedef struct {
-    GoInterface *call;
-    GoInterface *data;
+    void *call;
+    int num_in;
+    int num_out;
 } glue_cb_t;
 
+/* this function communicates up to Go when our handle on a callback is
+ * no longer referenced */
+static int glue_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
+    glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
+    go_release(cb->call);
+    return 0;
+}
+
+/* this table is used in the sv_magicext() call to tie a custom callback
+ * to deallocation of a given SV */
+static MGVTBL glue_vtbl = { 0, 0, 0, 0, glue_vtbl_sv_free };
+
+/* this is the target from perl of a callback that should be routed to
+ * Go */
 XS(glue_invoke)
 {
     dXSARGS;
     MAGIC *mg;
-   
+    SV **args, **rvs;
+    int i;
+
     mg = mg_findext((SV *)cv, PERL_MAGIC_ext, &glue_vtbl);
     glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
-    SV **args = alloca(items * sizeof(SV *));
-    int i;
-    for(i = 0; i < items; i++)
+    if (items != cb->num_in)
+        croak("expected %d args", cb->num_in);
+    args = alloca(cb->num_in * sizeof(SV *));
+    rvs = alloca(cb->num_out * sizeof(SV *));
+    for(i = 0; i < cb->num_in; i++)
         args[i] = ST(i);
-    SV **rvs = go_invoke(cb->call, cb->data, items, args);
-    for(i = 0; *rvs; i++)
-        ST(i) = *rvs++;
+    go_invoke(cb->call, args, rvs);
+    for(i = 0; i < cb->num_out; i++)
+        ST(i) = rvs[i];
     XSRETURN(i);
 }
 
-SV *glue_newCV(pTHX_ void *call, void *data) {
+/* the CV generated here will call into glue_invoke() */
+SV *glue_newCV(pTHX_ void *call, IV num_in, IV num_out) {
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
-    glue_cb_t cb = { call, data };
+    glue_cb_t cb = { call, num_in, num_out };
     sv_magicext((SV *)cv, 0, PERL_MAGIC_ext, &glue_vtbl, (char *)&cb, sizeof(cb));
     return newRV_noinc((SV *)cv);
 }

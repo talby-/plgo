@@ -7,6 +7,7 @@ package plgo
 */
 import "C"
 import (
+	"fmt"
 	"reflect"
 	"runtime"
 	"unsafe"
@@ -19,9 +20,18 @@ type pl_t struct {
 }
 
 type SV struct {
-	pl *pl_t
-	sv *C.SV
+	pl    *pl_t
+	sv    *C.SV
+	label string
 }
+
+// entry for the live_vals table
+type ref_t struct {
+	pl   *pl_t
+	call *reflect.Value
+}
+
+var live_vals map[unsafe.Pointer]*ref_t = map[unsafe.Pointer]*ref_t{}
 
 func New() (self *pl_t) {
 	self = new(pl_t)
@@ -32,16 +42,18 @@ func New() (self *pl_t) {
 	return self
 }
 
-var Dbg bool
-
 func (pl *pl_t) Leak(f func()) int {
-	runtime.GC()
+	//var t int
+	//runtime.GC(); runtime.GC(); runtime.GC(); runtime.GC(); runtime.GC()
 	a := C.glue_count_live(pl.thx)
-	Dbg = true
+	//pl.Bind(&t, `require Devel::Leak; Devel::Leak::NoteSV($handle)`)
+	//a := t
 	f()
-	Dbg = false
-	runtime.GC()
+	//runtime.GC(); runtime.GC(); runtime.GC(); runtime.GC(); runtime.GC()
 	b := C.glue_count_live(pl.thx)
+	//pl.Bind(&t, `Devel::Leak::CheckSV($handle)`)
+	//b := t
+	//C.glue_dump_live(pl.thx)
 	return int(b - a)
 }
 
@@ -55,9 +67,6 @@ func (pl *pl_t) Bind(ptr interface{}, defn string) error {
 		val := reflect.ValueOf(ptr).Elem()
 		pl.valSV(&val, sv)
 	}
-	//if Dbg {
-	//    C.glue_sv_dump(pl.thx, sv)
-	//}
 	C.glue_dec(pl.thx, sv)
 	return nil
 }
@@ -78,11 +87,7 @@ func (pl *pl_t) newSVval(src reflect.Value) *C.SV {
 		if pl.newSVcmplx == nil {
 			pl.Bind(&pl.newSVcmplx, `
 				require Math::Complex;
-				sub {
-					my $rv = Math::Complex->new(0, 0);
-					$rv->_set_cartesian([ @_ ]);
-					return $rv;
-				}
+				sub { my $rv = Math::Complex->new(0, 0); $rv->_set_cartesian([ @_ ]); return $rv; }
 			`)
 		}
 		v := src.Complex()
@@ -96,9 +101,13 @@ func (pl *pl_t) newSVval(src reflect.Value) *C.SV {
 		return C.glue_newAV(pl.thx, &dst[0])
 	case reflect.Chan:
 	case reflect.Func:
-		// careful here, the pl_t encapsulation seems delicate
-		pv := reflect.ValueOf(pl)
-		return C.glue_newCV(pl.thx, unsafe.Pointer(&src), unsafe.Pointer(&pv))
+		cb := new(ref_t)
+		cb.call = &src
+		cb.pl = pl
+		ptr := unsafe.Pointer(cb)
+		live_vals[ptr] = cb
+		ty := src.Type()
+		return C.glue_newCV(pl.thx, ptr, C.IV(ty.NumIn()), C.IV(ty.NumOut()))
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
@@ -156,22 +165,21 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 		if pl.valSVcmplx == nil {
 			pl.Bind(&pl.valSVcmplx, `
 				require Math::Complex;
-				sub {
-					return Math::Complex::Re($_[0]), Math::Complex::Im($_[0]);
-				}
+				sub { return Math::Complex::Re($_[0]), Math::Complex::Im($_[0]); }
 			`)
 		}
-		re, im := pl.valSVcmplx(pl.sV(src))
+		re, im := pl.valSVcmplx(pl.sV(src, ""))
 		dst.SetComplex(complex128(complex(re, im)))
 		return
 	case reflect.Array:
 	case reflect.Chan:
 	case reflect.Func:
 		ty := dst.Type()
-		cv := pl.sV(src)
-		// TODO: this inc is a memory leak!!
-		C.glue_inc(pl.thx, src)
+		var cv *SV
 		dst.Set(reflect.MakeFunc(ty, func(in []reflect.Value) []reflect.Value {
+			if len(cv.label) > 0 {
+				fmt.Printf("run %s\n", cv.label)
+			}
 			in_sv := make([]*C.SV, 1+ty.NumIn())
 			for i, val := range in {
 				in_sv[i] = pl.newSVval(val)
@@ -187,6 +195,7 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 			}
 			return out
 		}))
+		cv = pl.sV(src, "")//fmt.Sprintf("%v %p", dst, src))
 		return
 	case reflect.Interface:
 	case reflect.Map:
@@ -206,7 +215,10 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 		// TODO: this is sketchy, refactor
 		var sv *SV
 		if dst.Type().AssignableTo(reflect.TypeOf(sv)) {
-			sv = pl.sV(src)
+			sv = pl.sV(src, "")
+			// TODO: src will have refcnt 1 and .sV() will inc so
+			// shouldn't we drop one?
+			//C.glue_dec(pl.thx, src)
 			dst.Set(reflect.ValueOf(sv))
 			return
 		}
@@ -234,13 +246,20 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 }
 
 func svFini(sv *SV) {
+	if len(sv.label) > 0 {
+		fmt.Printf("dec %s\n", sv.label)
+	}
 	C.glue_dec(sv.pl.thx, sv.sv)
 }
 
-func (pl *pl_t) sV(sv *C.SV) *SV {
+func (pl *pl_t) sV(sv *C.SV, label string) *SV {
 	var self SV
 	self.pl = pl
 	self.sv = sv
+	self.label = label
+	if len(label) > 0 {
+		fmt.Printf("inc %s\n", label)
+	}
 	C.glue_inc(pl.thx, sv)
 	runtime.SetFinalizer(&self, svFini)
 	return &self
@@ -257,40 +276,46 @@ func (sv *SV) Dump() {
 	C.glue_sv_dump(sv.pl.thx, sv.sv)
 }
 
-var go_invoke_nogc []*C.SV
-
 //export go_invoke
-func go_invoke(call *interface{}, data *interface{}, n int, args_raw unsafe.Pointer) **C.SV {
-	// recover the thx wrap
-	pl := (*data).(*pl_t)
+func go_invoke(ptr unsafe.Pointer,
+	args_raw unsafe.Pointer, rvs_raw unsafe.Pointer) {
 
-	// learn about the callback we're about to make
-	cb := reflect.ValueOf(*call)
+	cbp := live_vals[ptr]
+
+	pl := cbp.pl
+	cb := cbp.call
+
 	ty := cb.Type()
 
 	// transform the call arguments
 	args_sv := *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
 		Data: uintptr(args_raw),
-		Len:  n,
-		Cap:  n,
+		Len:  ty.NumIn(),
+		Cap:  ty.NumIn(),
 	}))
-	args := make([]reflect.Value, n)
+	args := make([]reflect.Value, ty.NumIn())
 	for i, sv := range args_sv {
 		args[i] = reflect.New(ty.In(i)).Elem()
 		pl.valSV(&args[i], sv)
 		C.glue_dec(pl.thx, sv)
 	}
 
+	rvs_sv := *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: uintptr(rvs_raw),
+		Len:  ty.NumOut(),
+		Cap:  ty.NumOut(),
+	}))
+
 	// dispatch the call
 	rv := cb.Call(args)
 
 	// transform return values
-	lst := make([]*C.SV, 1+len(rv))
 	for i, val := range rv {
-		lst[i] = pl.newSVval(val)
+		rvs_sv[i] = pl.newSVval(val)
 	}
+}
 
-	// TODO: eliminate cheap hack to guard against GC
-	go_invoke_nogc = lst
-	return &lst[0]
+//export go_release
+func go_release(ptr unsafe.Pointer) {
+	delete(live_vals, ptr)
 }
