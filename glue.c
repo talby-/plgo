@@ -55,14 +55,14 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     return rv;
 }
 
-SV *glue_call_sv(pTHX_ SV *sv, SV **in, SV **out, int n_out) {
+SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
     I32 ax;
     int count;
     SV *err;
     dSP;
     int flags;
 
-    switch(n_out) {
+    switch(n) {
       case 0: flags |= G_VOID; break;
       case 1: flags |= G_SCALAR; break;
       default: flags |= G_ARRAY; break;
@@ -71,8 +71,10 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **in, SV **out, int n_out) {
     ENTER;
     SAVETMPS;
     PUSHMARK(SP);
-    while(*in)
-        mXPUSHs(*in++);
+    // caller passing ownership of args, callee wants mortals
+    while(*arg) {
+        mXPUSHs(*arg++);
+    }
     PUTBACK;
     count = call_sv(sv, G_EVAL | flags);
     SPAGAIN;
@@ -82,9 +84,10 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **in, SV **out, int n_out) {
         err = newSVsv(ERRSV);
     } else {
         int i;
-        for(i = 0; i < count && i < n_out; i++) {
-            out[i] = ST(i);
-            SvREFCNT_inc(out[i]);
+        for(i = 0; i < count && i < n; i++) {
+            ret[i] = ST(i);
+            // callee passes mortal rets, caller wants ownership
+            SvREFCNT_inc(ret[i]);
         }
         err = NULL;
     }
@@ -163,7 +166,7 @@ NV glue_getNV(pTHX_ SV *sv) { return SvNV(sv); }
 
 const char *glue_getPV(pTHX_ SV *sv, STRLEN *len) { return SvPV(sv, *len); }
 
-bool glue_walkAV(pTHX_ SV *sv, void *data) {
+bool glue_walkAV(pTHX_ SV *sv, IV data) {
     if(SvROK(sv)) {
         AV *av = (AV *)SvRV(sv);
         if(SvTYPE((SV *)av) == SVt_PVAV) {
@@ -179,7 +182,7 @@ bool glue_walkAV(pTHX_ SV *sv, void *data) {
     return FALSE;
 }
 
-bool glue_walkHV(pTHX_ SV *sv, void *data) {
+bool glue_walkHV(pTHX_ SV *sv, IV data) {
     if(SvROK(sv)) {
         HV *hv = (HV *)SvRV(sv);
         if(SvTYPE((SV *)hv) == SVt_PVHV) {
@@ -237,9 +240,9 @@ SV *glue_newRV(pTHX_ SV *sv) {
 
 /* this struct holds the callback info */
 typedef struct {
-    void *call;
-    int num_in;
-    int num_out;
+    IV call;
+    IV n_arg;
+    IV n_ret;
 } glue_cb_t;
 
 /* this function communicates up to Go when our handle on a callback is
@@ -260,25 +263,27 @@ XS(glue_invoke)
 {
     dXSARGS;
     MAGIC *mg;
-    SV **args, **rvs;
+    SV **arg, **ret;
     int i;
 
     mg = mg_findext((SV *)cv, PERL_MAGIC_ext, &glue_vtbl);
     glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
-    if (items != cb->num_in)
-        croak("expected %d args", cb->num_in);
-    args = alloca(cb->num_in * sizeof(SV *));
-    rvs = alloca(cb->num_out * sizeof(SV *));
-    for(i = 0; i < cb->num_in; i++)
-        args[i] = ST(i);
-    go_invoke(cb->call, args, rvs);
-    for(i = 0; i < cb->num_out; i++)
-        ST(i) = rvs[i];
+    if (items != cb->n_arg)
+        croak("expected %d args", cb->n_arg);
+    // args are already mortals
+    arg = alloca(cb->n_arg * sizeof(SV *));
+    ret = alloca(cb->n_ret * sizeof(SV *));
+    for(i = 0; i < cb->n_arg; i++)
+        arg[i] = ST(i);
+    go_invoke(cb->call, arg, ret);
+    // rets must be mortalized on the way out
+    for(i = 0; i < cb->n_ret; i++)
+        ST(i) = sv_2mortal(ret[i]);
     XSRETURN(i);
 }
 
 /* the CV generated here will call into glue_invoke() */
-SV *glue_newCV(pTHX_ void *call, IV num_in, IV num_out) {
+SV *glue_newCV(pTHX_ IV call, IV num_in, IV num_out) {
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
     glue_cb_t cb = { call, num_in, num_out };
     sv_magicext((SV *)cv, 0, PERL_MAGIC_ext, &glue_vtbl, (char *)&cb, sizeof(cb));

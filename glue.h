@@ -24,11 +24,8 @@ UV glue_getUV(pTHX_ SV *);
 NV glue_getNV(pTHX_ SV *);
 const char *glue_getPV(pTHX_ SV *, STRLEN *);
 
-extern void glue_stepAV(void *, SV *);
-bool glue_walkAV(pTHX_ SV *, void *);
-
-extern void glue_stepHV(void *, SV *, SV *);
-bool glue_walkHV(pTHX_ SV *, void *);
+bool glue_walkAV(pTHX_ SV *, IV);
+bool glue_walkHV(pTHX_ SV *, IV);
 
 SV *glue_newBool(pTHX_ bool);
 SV *glue_newIV(pTHX_ IV);
@@ -37,5 +34,5 @@ SV *glue_newNV(pTHX_ NV);
 SV *glue_newPV(pTHX_ char *, STRLEN);
 SV *glue_newAV(pTHX_ SV **);
 SV *glue_newHV(pTHX_ SV **);
-SV *glue_newCV(pTHX_ void *, IV, IV);
+SV *glue_newCV(pTHX_ IV, IV, IV);
 SV *glue_newRV(pTHX_ SV *);
