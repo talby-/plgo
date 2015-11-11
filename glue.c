@@ -33,11 +33,13 @@ PerlInterpreter *glue_init() {
 }
 
 void glue_fini(pTHX) {
+    PERL_SET_CONTEXT(my_perl);
     perl_destruct(my_perl);
     perl_free(my_perl);
 }
 
 SV *glue_eval(pTHX_ char *text, SV **errp) {
+    PERL_SET_CONTEXT(my_perl);
     SV *rv;
     ENTER;
     SAVETMPS;
@@ -58,10 +60,14 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
 SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
     I32 ax;
     int count;
+    int flags;
     SV *err;
     dSP;
-    int flags;
 
+    PERL_SET_CONTEXT(my_perl);
+    if(!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVCV) {
+        croak("sv %p is not a function", sv);
+    }
     switch(n) {
       case 0: flags |= G_VOID; break;
       case 1: flags |= G_SCALAR; break;
@@ -102,6 +108,7 @@ SV *glue_call_method(pTHX_
     SV **args,
     SV **errp
 ) {
+    PERL_SET_CONTEXT(my_perl);
     I32 ax;
     int i;
     SV *rv;
@@ -131,18 +138,34 @@ SV *glue_call_method(pTHX_
     return rv;
 }
 
-void glue_inc(pTHX_ SV *sv) { SvREFCNT_inc(sv); }
+void glue_inc(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    SvREFCNT_inc(sv);
+}
 
-void glue_dec(pTHX_ SV *sv) { SvREFCNT_dec(sv); }
+void glue_dec(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    SvREFCNT_dec(sv);
+}
 
-SV *glue_undef(pTHX) { return &PL_sv_undef; }
+SV *glue_undef(pTHX) {
+    PERL_SET_CONTEXT(my_perl);
+    return &PL_sv_undef;
+}
 
-void glue_sv_dump(pTHX_ SV *sv) { sv_dump(sv); }
+void glue_sv_dump(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    sv_dump(sv);
+}
 
-bool glue_SvOK(pTHX_ SV *sv) { return SvOK(sv); }
+bool glue_SvOK(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvOK(sv);
+}
 
 
 int glue_count_live(pTHX) {
+    PERL_SET_CONTEXT(my_perl);
     /* Devel::Leak proved to be too expensive to run during scans, so
      * this lifts a bit of it's algorithm for something to give us
      * simple live variable allocation counts */
@@ -156,17 +179,33 @@ int glue_count_live(pTHX) {
     return rv;
 }
 
-bool glue_getBool(pTHX_ SV *sv) { return SvTRUE(sv); }
+bool glue_getBool(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvTRUE(sv);
+}
 
-IV glue_getIV(pTHX_ SV *sv) { return SvIV(sv); }
+IV glue_getIV(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvIV(sv);
+}
 
-UV glue_getUV(pTHX_ SV *sv) { return SvUV(sv); }
+UV glue_getUV(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvUV(sv);
+}
 
-NV glue_getNV(pTHX_ SV *sv) { return SvNV(sv); }
+NV glue_getNV(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvNV(sv);
+}
 
-const char *glue_getPV(pTHX_ SV *sv, STRLEN *len) { return SvPV(sv, *len); }
+const char *glue_getPV(pTHX_ SV *sv, STRLEN *len) {
+    PERL_SET_CONTEXT(my_perl);
+    return SvPV(sv, *len);
+}
 
 bool glue_walkAV(pTHX_ SV *sv, IV data) {
+    PERL_SET_CONTEXT(my_perl);
     if(SvROK(sv)) {
         AV *av = (AV *)SvRV(sv);
         if(SvTYPE((SV *)av) == SVt_PVAV) {
@@ -183,6 +222,7 @@ bool glue_walkAV(pTHX_ SV *sv, IV data) {
 }
 
 bool glue_walkHV(pTHX_ SV *sv, IV data) {
+    PERL_SET_CONTEXT(my_perl);
     if(SvROK(sv)) {
         HV *hv = (HV *)SvRV(sv);
         if(SvTYPE((SV *)hv) == SVt_PVHV) {
@@ -199,21 +239,35 @@ bool glue_walkHV(pTHX_ SV *sv, IV data) {
     return FALSE;
 }
 
-SV *glue_newBool(pTHX_ bool v) { return boolSV(v); }
+SV *glue_newBool(pTHX_ bool v) {
+    PERL_SET_CONTEXT(my_perl);
+    return boolSV(v);
+}
 
-SV *glue_newIV(pTHX_ IV v) { return newSViv(v); }
+SV *glue_newIV(pTHX_ IV v) {
+    PERL_SET_CONTEXT(my_perl);
+    return newSViv(v);
+}
 
-SV *glue_newUV(pTHX_ UV v) { return newSVuv(v); }
+SV *glue_newUV(pTHX_ UV v) {
+    PERL_SET_CONTEXT(my_perl);
+    return newSVuv(v);
+}
 
-SV *glue_newNV(pTHX_ NV v) { return newSVnv(v); }
+SV *glue_newNV(pTHX_ NV v) {
+    PERL_SET_CONTEXT(my_perl);
+    return newSVnv(v);
+}
 
 SV *glue_newPV(pTHX_ char *str, STRLEN len) {
+    PERL_SET_CONTEXT(my_perl);
     SV *rv = newSVpvn(str, len);
     free(str);
     return rv;
 }
 
 SV *glue_newAV(pTHX_ SV **elts) {
+    PERL_SET_CONTEXT(my_perl);
     AV *av = newAV();
     while(*elts)
         av_push(av, *elts++);
@@ -221,6 +275,7 @@ SV *glue_newAV(pTHX_ SV **elts) {
 }
 
 SV *glue_newHV(pTHX_ SV **elts) {
+    PERL_SET_CONTEXT(my_perl);
     HV *hv = newHV();
     SV *rv;
     while(*elts) {
@@ -234,6 +289,7 @@ SV *glue_newHV(pTHX_ SV **elts) {
 }
 
 SV *glue_newRV(pTHX_ SV *sv) {
+    PERL_SET_CONTEXT(my_perl);
     return newRV_inc(sv);
 }
 
@@ -248,6 +304,7 @@ typedef struct {
 /* this function communicates up to Go when our handle on a callback is
  * no longer referenced */
 static int glue_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
+    PERL_SET_CONTEXT(my_perl);
     glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
     go_release(cb->call);
     return 0;
@@ -284,6 +341,7 @@ XS(glue_invoke)
 
 /* the CV generated here will call into glue_invoke() */
 SV *glue_newCV(pTHX_ IV call, IV num_in, IV num_out) {
+    PERL_SET_CONTEXT(my_perl);
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
     glue_cb_t cb = { call, num_in, num_out };
     sv_magicext((SV *)cv, 0, PERL_MAGIC_ext, &glue_vtbl, (char *)&cb, sizeof(cb));

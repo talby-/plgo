@@ -72,14 +72,6 @@ func TestBool(t *testing.T) {
 	}
 }
 
-func BenchmarkBool(b *testing.B) {
-	str := "1"
-	var v bool
-	for i := 0; i < b.N; i++ {
-		pl.Bind(&v, str)
-	}
-}
-
 func TestInt(t *testing.T) {
 	var id func(int) int
 	pl.Bind(&id, `sub { $_[0] }`)
@@ -97,14 +89,6 @@ func TestInt(t *testing.T) {
 	})
 	if v != 0 {
 		t.Errorf("leaked %d SVs", v)
-	}
-}
-
-func BenchmarkInt(b *testing.B) {
-	str := "1"
-	var v int
-	for i := 0; i < b.N; i++ {
-		pl.Bind(&v, str)
 	}
 }
 
@@ -584,5 +568,25 @@ func TestMulti(t *testing.T) {
 	})
 	if v != 0 {
 		t.Errorf("leaked %d SVs", v)
+	}
+}
+
+func BenchmarkBind(b *testing.B) {
+	var v int
+	for i := 0; i < b.N; i++ {
+		pl.Bind(&v, `123`)
+		if v != 123 {
+			panic("ugh")
+		}
+	}
+}
+
+func BenchmarkCall(b *testing.B) {
+	var fn func() int
+	pl.Bind(&fn, `sub () { 123 }`)
+	for i := 0; i < b.N; i++ {
+		if fn() != 123 {
+			panic("ugh")
+		}
 	}
 }

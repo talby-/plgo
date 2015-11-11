@@ -9,6 +9,8 @@ sub trim {
     return $s;
 }
 
+my($fn) = @ARGV;
+
 my $hdr = qq{/*
 #cgo CFLAGS: ${\ trim(ExtUtils::Embed::ccopts()) }
 #cgo LDFLAGS: ${\ trim(ExtUtils::Embed::ldopts()) }
@@ -16,13 +18,13 @@ my $hdr = qq{/*
 */
 import "C"};
 
-open my($src), '+<', 'link.go';
+open my($src), '+<', $fn or die "unable to open $fn";
 my $txt = do {
     undef $/;
     <$src>;
 };
 $txt =~ s{/\*(.*?)\*/\s*import\s+"C"}{$hdr}s
-    or die "unable to match cgo block in link.go";
+    or die "unable to find cgo block in $fn";
 seek $src, 0, 0;
 print $src $txt;
 use bytes;
