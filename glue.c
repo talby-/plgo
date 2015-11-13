@@ -148,6 +148,17 @@ void glue_dec(pTHX_ SV *sv) {
     SvREFCNT_dec(sv);
 }
 
+static int dbg_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
+    PERL_SET_CONTEXT(my_perl);
+    char buf[128];
+    int l = write(2, buf, sprintf(buf, "SVFREE  %p\n", sv));
+    return 0;
+}
+static MGVTBL dbg_vtbl = { 0, 0, 0, 0, dbg_vtbl_sv_free };
+void glue_track(pTHX_ SV *sv) {
+    sv_magicext(sv, 0, PERL_MAGIC_ext, &dbg_vtbl, (char *)0xc0ffee, 0);
+}
+
 SV *glue_undef(pTHX) {
     PERL_SET_CONTEXT(my_perl);
     return &PL_sv_undef;

@@ -13,6 +13,7 @@ SV *glue_call_method(pTHX_ char *, SV **, SV **);
 
 void glue_inc(pTHX_ SV *);
 void glue_dec(pTHX_ SV *);
+void glue_track(pTHX_ SV *);
 
 SV *glue_undef(pTHX);
 void glue_sv_dump(pTHX_ SV *);
