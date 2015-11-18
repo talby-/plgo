@@ -1,6 +1,7 @@
 package plgo_test
 
 import (
+	"fmt"
 	"git.dev.whs/talby/plgo"
 	"math"
 	"math/cmplx"
@@ -9,6 +10,28 @@ import (
 )
 
 var pl = plgo.New()
+
+func ExamplePL_Bind() {
+	// get a Perl interpreter
+	p := plgo.New()
+
+	// load Perl's SHA package
+	p.Bind(nil, `use Digest::SHA`)
+
+	// extract a SHA hash from Perl
+	var sum string
+	p.Bind(&sum, `Digest::SHA::sha1_hex("hello")`)
+	fmt.Println(sum)
+
+	// extract the SHA hashing function from Perl
+	var sha1 func(string) string
+	p.Bind(&sha1, `\&Digest::SHA::sha1_hex`)
+	fmt.Println(sha1("hello"))
+
+	// Output:
+	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+}
 
 func leak(t *testing.T, n int, obj interface{}, txt string) {
 	var in_fn, rv_fn func()
@@ -440,10 +463,11 @@ func TestMap(t *testing.T) {
 	leak(t, 128, map[string]int{"uuu": 17}, `{ vvv => 18 }`)
 }
 
+/*
 func TestSV(t *testing.T) {
 	ok := func(mk, ck string) {
-		var val *plgo.SV
-		var chk func(*plgo.SV) bool
+		var val *plgo.sV
+		var chk func(*plgo.sV) bool
 		pl.Bind(&val, mk)
 		pl.Bind(&chk, "sub {"+ck+"}")
 		if !chk(val) {
@@ -461,6 +485,7 @@ func TestSV(t *testing.T) {
 	ok(`sub { 543 }`, `$_[0]->() == 543`)                  // PVCV
 	ok(`undef`, `not defined $_[0]`)
 }
+*/
 
 func TestSlice(t *testing.T) {
 	var id func([]int) []int

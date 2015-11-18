@@ -1,3 +1,4 @@
+// plgo provides a Perl runtime to Go
 package plgo
 
 //go:generate ./gen.pl $GOFILE
@@ -16,17 +17,17 @@ import (
 	"unsafe"
 )
 
-type pl_t struct {
+type PL struct {
 	thx        *C.PerlInterpreter
 	mx         sync.Mutex
-	newSVcmplx func(float64, float64) *SV
-	valSVcmplx func(*SV) (float64, float64)
+	newSVcmplx func(float64, float64) *sV
+	valSVcmplx func(*sV) (float64, float64)
 }
 
-var active_pl *pl_t
+var active_pl *PL
 
-type SV struct {
-	pl  *pl_t
+type sV struct {
+	pl  *PL
 	sv  *C.SV
 	own bool
 }
@@ -40,26 +41,24 @@ var (
 	live_vals   = map[int]*reflect.Value{}
 )
 
-func plFini(pl *pl_t) {
+func plFini(pl *PL) {
 	pl.mx.Lock()
 	C.glue_fini(pl.thx)
 	pl.mx.Unlock()
 }
 
-func New() (pl *pl_t) {
-	pl = new(pl_t)
+// New prepares a Perl interpreter
+func New() *PL {
+	pl := new(PL)
 	pl.thx = C.glue_init()
 	runtime.SetFinalizer(pl, plFini)
-	return
+	return pl
 }
 
-func (pl *pl_t) Live() int {
-	pl.mx.Lock()
-	defer pl.mx.Unlock()
-	return int(C.glue_count_live(pl.thx))
-}
-
-func (pl *pl_t) Bind(ptr interface{}, defn string) error {
+// Bind will evaluate a string of Perl code and then store the results
+// in ptr.  Not all types are supported, but many types are, including
+// functions.
+func (pl *PL) Bind(ptr interface{}, defn string) error {
 	var err *C.SV
 	prev_pl := active_pl
 	active_pl = pl
@@ -80,7 +79,16 @@ func (pl *pl_t) Bind(ptr interface{}, defn string) error {
 	return nil
 }
 
-func (pl *pl_t) newSVval(src reflect.Value) *C.SV {
+// Live counts the number of live variables in the Perl instance.
+// This function is used for leak detection in the test code.
+// runtime.GC() must be called to get accurate live value counts.
+func (pl *PL) Live() int {
+	pl.mx.Lock()
+	defer pl.mx.Unlock()
+	return int(C.glue_count_live(pl.thx))
+}
+
+func (pl *PL) newSVval(src reflect.Value) *C.SV {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
@@ -142,9 +150,9 @@ func (pl *pl_t) newSVval(src reflect.Value) *C.SV {
 		return C.glue_newHV(pl.thx, &dst[0])
 	case reflect.Ptr:
 		// TODO: for now we're only handling *plgo.SV unwrapping
-		var sv *SV
+		var sv *sV
 		if t.AssignableTo(reflect.TypeOf(sv)) {
-			sv = src.Interface().(*SV)
+			sv = src.Interface().(*sV)
 			return sv.sv
 		}
 	case reflect.String:
@@ -171,7 +179,7 @@ func glue_stepAV(cb uintptr, sv *C.SV) {
 	(*(*func(*C.SV))(unsafe.Pointer(cb)))(sv)
 }
 
-func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
+func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 	t := dst.Type()
 	switch t.Kind() {
 	case reflect.Bool:
@@ -212,7 +220,7 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 	case reflect.Array:
 	case reflect.Chan:
 	case reflect.Func:
-		var cv *SV
+		var cv *sV
 		dst.Set(reflect.MakeFunc(t, func(arg []reflect.Value) (ret []reflect.Value) {
 			args := make([]*C.SV, 1+t.NumIn())
 			for i, val := range arg {
@@ -259,7 +267,7 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 	case reflect.Ptr:
 		// TODO: for now we're only handling *plgo.SV wrapping
 		// TODO: this is sketchy, refactor
-		var sv *SV
+		var sv *sV
 		if dst.Type().AssignableTo(reflect.TypeOf(sv)) {
 			sv = pl.sV(src, false)
 			dst.Set(reflect.ValueOf(sv))
@@ -293,7 +301,7 @@ func (pl *pl_t) valSV(dst *reflect.Value, src *C.SV) {
 	panic("unhandled type \"" + t.Kind().String() + "\"")
 }
 
-func svFini(sv *SV) {
+func svFini(sv *sV) {
 	if sv.own {
 		if false {
 			fmt.Printf("RELEASE %p\n", sv.sv)
@@ -304,8 +312,8 @@ func svFini(sv *SV) {
 	}
 }
 
-func (pl *pl_t) sV(sv *C.SV, own bool) *SV {
-	var self SV
+func (pl *PL) sV(sv *C.SV, own bool) *sV {
+	var self sV
 	self.pl = pl
 	self.sv = sv
 	self.own = own
@@ -322,7 +330,7 @@ func (pl *pl_t) sV(sv *C.SV, own bool) *SV {
 	return &self
 }
 
-func (self *SV) Error() string {
+func (self *sV) Error() string {
 	var s string
 	v := reflect.ValueOf(s)
 	self.pl.valSV(&v, self.sv)
