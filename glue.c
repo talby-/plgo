@@ -224,7 +224,7 @@ bool glue_walkAV(pTHX_ SV *sv, IV data) {
             SAVETMPS;
             SV **eltp;
             while(eltp = av_fetch(av, i++, 0))
-                glue_stepAV(data, *eltp);
+                goStepAV(data, *eltp);
             FREETMPS;
             return TRUE;
         }
@@ -242,7 +242,7 @@ bool glue_walkHV(pTHX_ SV *sv, IV data) {
             SAVETMPS;
             hv_iterinit(hv);
             while(he = hv_iternext(hv))
-                glue_stepHV(data, HeSVKEY_force(he), HeVAL(he));
+                goStepHV(data, HeSVKEY_force(he), HeVAL(he));
             FREETMPS;
             return TRUE;
         }
@@ -317,7 +317,7 @@ typedef struct {
 static int glue_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
     PERL_SET_CONTEXT(my_perl);
     glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
-    go_release(cb->call);
+    goRelease(cb->call);
     return 0;
 }
 
@@ -343,7 +343,7 @@ XS(glue_invoke)
     ret = alloca(cb->n_ret * sizeof(SV *));
     for(i = 0; i < cb->n_arg; i++)
         arg[i] = ST(i);
-    go_invoke(cb->call, arg, ret);
+    goInvoke(cb->call, arg, ret);
     // rets must be mortalized on the way out
     for(i = 0; i < cb->n_ret; i++)
         ST(i) = sv_2mortal(ret[i]);

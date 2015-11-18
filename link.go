@@ -1,4 +1,4 @@
-// plgo provides a Perl runtime to Go
+// Package plgo provides a Perl runtime to Go
 package plgo
 
 //go:generate ./gen.pl $GOFILE
@@ -17,6 +17,7 @@ import (
 	"unsafe"
 )
 
+// PL holds a Perl runtime instance
 type PL struct {
 	thx        *C.PerlInterpreter
 	mx         sync.Mutex
@@ -24,7 +25,7 @@ type PL struct {
 	valSVcmplx func(*sV) (float64, float64)
 }
 
-var active_pl *PL
+var activePL *PL
 
 type sV struct {
 	pl  *PL
@@ -35,10 +36,10 @@ type sV struct {
 // We can not reliably hold pointers to Go objects in C
 // https://github.com/golang/go/issues/12416 documents the rules.
 // runtime.GC() can move objects in memory so we have to create an
-// indirection layer.  The live_vals map will serve this purpose.
+// indirection layer.  The liveVals map will serve this purpose.
 var (
-	live_vals_n = 0
-	live_vals   = map[int]*reflect.Value{}
+	liveValsSeq = 0
+	liveVals    = map[int]*reflect.Value{}
 )
 
 func plFini(pl *PL) {
@@ -60,12 +61,12 @@ func New() *PL {
 // functions.
 func (pl *PL) Bind(ptr interface{}, defn string) error {
 	var err *C.SV
-	prev_pl := active_pl
-	active_pl = pl
+	prevPL := activePL
+	activePL = pl
 	pl.mx.Lock()
 	sv := C.glue_eval(pl.thx, C.CString(defn), &err)
 	pl.mx.Unlock()
-	active_pl = prev_pl
+	activePL = prevPL
 	if sv == nil {
 		panic("glue_eval() => nil?")
 	}
@@ -131,9 +132,9 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 		return C.glue_newAV(pl.thx, &dst[0])
 	case reflect.Chan:
 	case reflect.Func:
-		live_vals_n++
-		id := live_vals_n
-		live_vals[id] = &src
+		liveValsSeq++
+		id := liveValsSeq
+		liveVals[id] = &src
 		pl.mx.Lock()
 		defer pl.mx.Unlock()
 		return C.glue_newCV(pl.thx, C.IV(id), C.IV(t.NumIn()), C.IV(t.NumOut()))
@@ -167,14 +168,14 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 	return nil
 }
 
-//export glue_stepHV
-func glue_stepHV(cb uintptr, key *C.SV, val *C.SV) {
+//export goStepHV
+func goStepHV(cb uintptr, key *C.SV, val *C.SV) {
 	//the callee is responsible for unlocking the pl.mx
 	(*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val)
 }
 
-//export glue_stepAV
-func glue_stepAV(cb uintptr, sv *C.SV) {
+//export goStepAV
+func goStepAV(cb uintptr, sv *C.SV) {
 	//the callee is responsible for unlocking the pl.mx
 	(*(*func(*C.SV))(unsafe.Pointer(cb)))(sv)
 }
@@ -228,13 +229,13 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			}
 			rets := make([]*C.SV, 1+t.NumOut())
 
-			prev_pl := active_pl
-			active_pl = pl
+			prevPL := activePL
+			activePL = pl
 			pl.mx.Lock()
 			C.glue_call_sv(pl.thx, cv.sv,
 				&args[0], &rets[0], C.int(t.NumOut()))
 			pl.mx.Unlock()
-			active_pl = prev_pl
+			activePL = prevPL
 
 			ret = make([]reflect.Value, t.NumOut())
 			for i, sv := range rets[0:len(ret)] {
@@ -330,19 +331,19 @@ func (pl *PL) sV(sv *C.SV, own bool) *sV {
 	return &self
 }
 
-func (self *sV) Error() string {
+func (sv *sV) Error() string {
 	var s string
 	v := reflect.ValueOf(s)
-	self.pl.valSV(&v, self.sv)
+	sv.pl.valSV(&v, sv.sv)
 	return s
 }
 
-//export go_invoke
-func go_invoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
-	if active_pl == nil {
-		panic("active_pl not set")
+//export goInvoke
+func goInvoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
+	if activePL == nil {
+		panic("activePL not set")
 	}
-	active_pl.mx.Unlock()
+	activePL.mx.Unlock()
 	cnv := func(raw unsafe.Pointer, n int) []*C.SV {
 		return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
 			Data: uintptr(raw),
@@ -351,26 +352,26 @@ func go_invoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
 		}))
 	}
 	// recover info
-	val := live_vals[data]
+	val := liveVals[data]
 	t := val.Type()
 	// xlate args - they are already mortal, don't take ownership unless
 	// they need to survive beyond the function call
 	args := make([]reflect.Value, t.NumIn())
 	for i, sv := range cnv(arg, len(args)) {
 		args[i] = reflect.New(t.In(i)).Elem()
-		active_pl.valSV(&args[i], sv)
+		activePL.valSV(&args[i], sv)
 	}
 	// xlate rets - return as owning references and glue_invoke() will
 	// mortalize them for us
 	rets := cnv(ret, t.NumOut())
 	for i, val := range val.Call(args) {
-		rets[i] = active_pl.newSVval(val)
+		rets[i] = activePL.newSVval(val)
 	}
-	active_pl.mx.Lock()
+	activePL.mx.Lock()
 }
 
-//export go_release
-func go_release(data int) {
+//export goRelease
+func goRelease(data int) {
 	// if this gets complicated, remember to unlock/lock pl.mx
-	delete(live_vals, data)
+	delete(liveVals, data)
 }
