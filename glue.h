@@ -3,7 +3,7 @@
 #include "EXTERN.h"
 #include "perl.h"
 
-PerlInterpreter *glue_init();
+tTHX glue_init();
 
 void glue_fini(pTHX);
 

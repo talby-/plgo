@@ -19,7 +19,7 @@ import (
 
 // PL holds a Perl runtime instance
 type PL struct {
-	thx        *C.PerlInterpreter
+	thx        C.tTHX
 	mx         sync.Mutex
 	newSVcmplx func(float64, float64) *sV
 	valSVcmplx func(*sV) (float64, float64)

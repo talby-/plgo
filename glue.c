@@ -20,7 +20,7 @@ const char *init_text =
     "1;"\
 ;
 
-PerlInterpreter *glue_init() {
+tTHX glue_init() {
     int argc = 3;
     char *argv[] = { "", "-e", "0", NULL };
     
