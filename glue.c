@@ -13,13 +13,6 @@ static void xs_init(pTHX) {
     newXS("DynaLoader::boot_DynaLoader", boot_DynaLoader, __FILE__);
 }
 
-const char *init_text =
-    "package PlGo;"\
-    "use strict;"\
-    "use warnings;"\
-    "1;"\
-;
-
 tTHX glue_init() {
     int argc = 3;
     char *argv[] = { "", "-e", "0", NULL };
@@ -69,9 +62,9 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
         croak("sv %p is not a function", sv);
     }
     switch(n) {
-      case 0: flags |= G_VOID; break;
-      case 1: flags |= G_SCALAR; break;
-      default: flags |= G_ARRAY; break;
+      case 0: flags = G_VOID; break;
+      case 1: flags = G_SCALAR; break;
+      default: flags = G_ARRAY; break;
     }
 
     ENTER;
@@ -103,41 +96,6 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
     return err;
 }
 
-SV *glue_call_method(pTHX_
-    char *method,
-    SV **args,
-    SV **errp
-) {
-    PERL_SET_CONTEXT(my_perl);
-    I32 ax;
-    int i;
-    SV *rv;
-    dSP;
-
-    ENTER;
-    SAVETMPS;
-    PUSHMARK(SP);
-    while(*args)
-        mXPUSHs(*args++);
-    PUTBACK;
-    i = call_method(method, G_EVAL | G_SCALAR);
-    SPAGAIN;
-    if(SvTRUE(ERRSV)) {
-        *errp = newSVsv(ERRSV);
-    } else {
-        *errp = NULL;
-        rv = POPs;
-        SvREFCNT_inc(rv);
-    }
-    PUTBACK;
-    FREETMPS;
-    LEAVE;
-    free(method);
-    if(*errp)
-        return NULL;
-    return rv;
-}
-
 void glue_inc(pTHX_ SV *sv) {
     PERL_SET_CONTEXT(my_perl);
     SvREFCNT_inc(sv);
@@ -151,29 +109,16 @@ void glue_dec(pTHX_ SV *sv) {
 static int dbg_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
     PERL_SET_CONTEXT(my_perl);
     char buf[128];
-    int l = write(2, buf, sprintf(buf, "SVFREE  %p\n", sv));
+    int l = write(STDERR_FILENO, buf, sprintf(buf, "SVFREE  %p\n", sv));
+
+    (void) l;
     return 0;
 }
+
 static MGVTBL dbg_vtbl = { 0, 0, 0, 0, dbg_vtbl_sv_free };
 void glue_track(pTHX_ SV *sv) {
     sv_magicext(sv, 0, PERL_MAGIC_ext, &dbg_vtbl, (char *)0xc0ffee, 0);
 }
-
-SV *glue_undef(pTHX) {
-    PERL_SET_CONTEXT(my_perl);
-    return &PL_sv_undef;
-}
-
-void glue_sv_dump(pTHX_ SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
-    sv_dump(sv);
-}
-
-bool glue_SvOK(pTHX_ SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
-    return SvOK(sv);
-}
-
 
 int glue_count_live(pTHX) {
     PERL_SET_CONTEXT(my_perl);
@@ -223,7 +168,7 @@ bool glue_walkAV(pTHX_ SV *sv, IV data) {
             I32 i = 0;
             SAVETMPS;
             SV **eltp;
-            while(eltp = av_fetch(av, i++, 0))
+            while((eltp = av_fetch(av, i++, 0)))
                 goStepAV(data, *eltp);
             FREETMPS;
             return TRUE;
@@ -238,10 +183,9 @@ bool glue_walkHV(pTHX_ SV *sv, IV data) {
         HV *hv = (HV *)SvRV(sv);
         if(SvTYPE((SV *)hv) == SVt_PVHV) {
             HE *he;
-            SV *key, *val;
             SAVETMPS;
             hv_iterinit(hv);
-            while(he = hv_iternext(hv))
+            while((he = hv_iternext(hv)))
                 goStepHV(data, HeSVKEY_force(he), HeVAL(he));
             FREETMPS;
             return TRUE;
@@ -288,7 +232,6 @@ SV *glue_newAV(pTHX_ SV **elts) {
 SV *glue_newHV(pTHX_ SV **elts) {
     PERL_SET_CONTEXT(my_perl);
     HV *hv = newHV();
-    SV *rv;
     while(*elts) {
         SV *k = *elts++;
         SV *v = *elts++;
@@ -304,29 +247,23 @@ SV *glue_newRV(pTHX_ SV *sv) {
     return newRV_inc(sv);
 }
 
-
-/* this struct holds the callback info */
+/* glue_invoke() needs these details */
 typedef struct {
     IV call;
     IV n_arg;
     IV n_ret;
 } glue_cb_t;
 
-/* this function communicates up to Go when our handle on a callback is
- * no longer referenced */
+/* When Perl releases our CV we should notify Go */
 static int glue_vtbl_sv_free(pTHX_ SV *sv, MAGIC *mg) {
     PERL_SET_CONTEXT(my_perl);
     glue_cb_t *cb = (glue_cb_t *)mg->mg_ptr;
     goRelease(cb->call);
     return 0;
 }
-
-/* this table is used in the sv_magicext() call to tie a custom callback
- * to deallocation of a given SV */
 static MGVTBL glue_vtbl = { 0, 0, 0, 0, glue_vtbl_sv_free };
 
-/* this is the target from perl of a callback that should be routed to
- * Go */
+/* XS stub for Go callbacks */
 XS(glue_invoke)
 {
     dXSARGS;
@@ -350,7 +287,7 @@ XS(glue_invoke)
     XSRETURN(i);
 }
 
-/* the CV generated here will call into glue_invoke() */
+/* Tie a CV to glue_invoke() and stash the Go details */
 SV *glue_newCV(pTHX_ IV call, IV num_in, IV num_out) {
     PERL_SET_CONTEXT(my_perl);
     CV *cv = newXS(NULL, glue_invoke, __FILE__);

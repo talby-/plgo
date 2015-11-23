@@ -12,7 +12,7 @@ sub trim {
 my($fn) = @ARGV;
 
 my $hdr = qq{/*
-#cgo CFLAGS: ${\ trim(ExtUtils::Embed::ccopts()) }
+#cgo CFLAGS: -Wall ${\ trim(ExtUtils::Embed::ccopts()) }
 #cgo LDFLAGS: ${\ trim(ExtUtils::Embed::ldopts()) }
 #include "glue.h"
 */
@@ -20,7 +20,7 @@ import "C"};
 
 open my($src), '+<', $fn or die "unable to open $fn";
 my $txt = do {
-    undef $/;
+    local $/;
     <$src>;
 };
 $txt =~ s{/\*(.*?)\*/\s*import\s+"C"}{$hdr}s

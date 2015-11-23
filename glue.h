@@ -9,15 +9,11 @@ void glue_fini(pTHX);
 
 SV *glue_eval(pTHX_ char *, SV **);
 SV *glue_call_sv(pTHX_ SV *, SV **, SV **, int);
-SV *glue_call_method(pTHX_ char *, SV **, SV **);
 
 void glue_inc(pTHX_ SV *);
 void glue_dec(pTHX_ SV *);
 void glue_track(pTHX_ SV *);
 
-SV *glue_undef(pTHX);
-void glue_sv_dump(pTHX_ SV *);
-bool glue_SvOK(pTHX_ SV *);
 int glue_count_live(pTHX);
 
 bool glue_getBool(pTHX_ SV *);
