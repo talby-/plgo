@@ -17,7 +17,7 @@ import (
 	"unsafe"
 )
 
-// PL holds a Perl runtime instance
+// PL holds a Perl runtime
 type PL struct {
 	thx        C.tTHX
 	mx         sync.Mutex
@@ -48,7 +48,7 @@ func plFini(pl *PL) {
 	pl.mx.Unlock()
 }
 
-// New prepares a Perl interpreter
+// New initializes a Perl runtime
 func New() *PL {
 	pl := new(PL)
 	pl.thx = C.glue_init()
@@ -56,29 +56,42 @@ func New() *PL {
 	return pl
 }
 
-// Bind will evaluate a string of Perl code and then store the results
-// in ptr.  Not all types are supported, but many types are, including
+// Eval will execute a string of Perl code.  If ptrs are provided,
+// the list of results from Perl will be stored in the list of ptrs.
+// Not all types are supported, but many basic types are, including
 // functions.
-func (pl *PL) Bind(ptr interface{}, defn string) error {
+func (pl *PL) Eval(text string, ptrs ... interface{}) error {
 	var err *C.SV
 	prevPL := activePL
 	activePL = pl
+	code := C.CString("[ do { \n#line 0 \"pl.Eval()\"\n" + text + "\n } ]")
 	pl.mx.Lock()
-	sv := C.glue_eval(pl.thx, C.CString(defn), &err)
+	av := C.glue_eval(pl.thx, code, &err)
 	pl.mx.Unlock()
 	activePL = prevPL
-	if sv == nil {
-		panic("glue_eval() => nil?")
-	}
-	if ptr != nil {
-		val := reflect.ValueOf(ptr).Elem()
-		pl.valSV(&val, sv)
+
+	if len(ptrs) > 0 {
+		i := 0
+		cb := func(sv *C.SV) {
+			if i >= len(ptrs) {
+				return
+			}
+			pl.mx.Unlock()
+			val := reflect.ValueOf(ptrs[i]).Elem()
+			pl.valSV(&val, sv)
+			i++
+			pl.mx.Lock()
+		}
+		pl.mx.Lock()
+		C.glue_walkAV(pl.thx, av, C.IV(uintptr(unsafe.Pointer(&cb))))
+		pl.mx.Unlock()
 	}
 	pl.mx.Lock()
-	C.glue_dec(pl.thx, sv)
+	C.glue_dec(pl.thx, av)
 	pl.mx.Unlock()
 	return nil
 }
+
 
 // Live counts the number of live variables in the Perl instance.
 // This function is used for leak detection in the test code.
@@ -114,10 +127,10 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 		return C.glue_newNV(pl.thx, C.NV(src.Float()))
 	case reflect.Complex64, reflect.Complex128:
 		if pl.newSVcmplx == nil {
-			pl.Bind(&pl.newSVcmplx, `
+			pl.Eval(`
 				require Math::Complex;
 				sub { my $rv = Math::Complex->new(0, 0); $rv->_set_cartesian([ @_ ]); return $rv; }
-			`)
+			`, &pl.newSVcmplx)
 		}
 		v := src.Complex()
 		return pl.newSVcmplx(real(v), imag(v)).sv
@@ -210,10 +223,10 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 		return
 	case reflect.Complex64, reflect.Complex128:
 		if pl.valSVcmplx == nil {
-			pl.Bind(&pl.valSVcmplx, `
+			pl.Eval(`
 				require Math::Complex;
 				sub { return Math::Complex::Re($_[0]), Math::Complex::Im($_[0]); }
-			`)
+			`, &pl.valSVcmplx)
 		}
 		re, im := pl.valSVcmplx(pl.sV(src, false))
 		dst.SetComplex(complex128(complex(re, im)))

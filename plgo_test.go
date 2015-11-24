@@ -11,21 +11,21 @@ import (
 
 var pl = plgo.New()
 
-func ExamplePL_Bind() {
+func ExamplePL_Eval() {
 	// get a Perl interpreter
 	p := plgo.New()
 
 	// load Perl's SHA package
-	p.Bind(nil, `use Digest::SHA`)
+	p.Eval(`use Digest::SHA`)
 
 	// extract a SHA hash from Perl
 	var sum string
-	p.Bind(&sum, `Digest::SHA::sha1_hex("hello")`)
+	p.Eval(`Digest::SHA::sha1_hex("hello")`, &sum)
 	fmt.Println(sum)
 
 	// extract the SHA hashing function from Perl
 	var sha1 func(string) string
-	p.Bind(&sha1, `\&Digest::SHA::sha1_hex`)
+	p.Eval(`\&Digest::SHA::sha1_hex`, &sha1)
 	fmt.Println(sha1("hello"))
 
 	// Output:
@@ -38,49 +38,49 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 	switch val := obj.(type) {
 	case bool:
 		var fn func(bool)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case int:
 		var fn func(int)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case uint:
 		var fn func(uint)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case float64:
 		var fn func(float64)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case complex128:
 		var fn func(complex128)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case map[string]int:
 		var fn func(map[string]int)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case []int:
 		var fn func([]int)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case string:
 		var fn func(string)
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	case func():
 		var fn func(func())
-		pl.Bind(&fn, `sub {}`)
+		pl.Eval(`sub {}`, &fn)
 		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Bind(&val, txt) }
+		in_fn = func() { pl.Eval(txt, &val) }
 	default:
 		t.Errorf("unsupported type for leak check")
 		return
@@ -102,13 +102,13 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 	}
 }
 
-func TestNil(t *testing.T) {
-	err := pl.Bind(nil, `1`)
+func TestEval(t *testing.T) {
+	err := pl.Eval(`1`)
 	if err != nil {
 		t.Errorf("perl error unexpected: %s", err.Error())
 	}
 	// TODO: test errors
-	//err = pl.Bind(nil, `1 = 2`)
+	//err = pl.Eval(`1 = 2`)
 	//if err == nil {
 	//	t.Errorf("perl error expected")
 	//}
@@ -116,7 +116,7 @@ func TestNil(t *testing.T) {
 
 func TestBool(t *testing.T) {
 	var id func(bool) bool
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want bool) {
 		have := id(want)
 		if want != have {
@@ -125,7 +125,7 @@ func TestBool(t *testing.T) {
 	}
 	is := func(expr string, want bool) {
 		var have bool
-		pl.Bind(&have, expr)
+		pl.Eval(expr, &have)
 		if want != have {
 			t.Errorf("is(`%s`) want %v have %v", expr, want, have)
 		}
@@ -147,7 +147,7 @@ func TestBool(t *testing.T) {
 
 func TestInt(t *testing.T) {
 	var id func(int) int
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want int) {
 		have := id(want)
 		if want != have {
@@ -164,7 +164,7 @@ func TestInt(t *testing.T) {
 
 func TestInt8(t *testing.T) {
 	var id func(int8) int8
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want int8) {
 		have := id(want)
 		if want != have {
@@ -180,7 +180,7 @@ func TestInt8(t *testing.T) {
 
 func TestInt16(t *testing.T) {
 	var id func(int16) int16
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want int16) {
 		have := id(want)
 		if want != have {
@@ -196,7 +196,7 @@ func TestInt16(t *testing.T) {
 
 func TestInt32(t *testing.T) {
 	var id func(int32) int32
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want int32) {
 		have := id(want)
 		if want != have {
@@ -212,7 +212,7 @@ func TestInt32(t *testing.T) {
 
 func TestInt64(t *testing.T) {
 	var id func(int64) int64
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want int64) {
 		have := id(want)
 		if want != have {
@@ -228,7 +228,7 @@ func TestInt64(t *testing.T) {
 
 func TestUint(t *testing.T) {
 	var id func(uint) uint
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uint) {
 		have := id(want)
 		if want != have {
@@ -244,7 +244,7 @@ func TestUint(t *testing.T) {
 
 func TestUint8(t *testing.T) {
 	var id func(uint8) uint8
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uint8) {
 		have := id(want)
 		if want != have {
@@ -258,7 +258,7 @@ func TestUint8(t *testing.T) {
 
 func TestUint16(t *testing.T) {
 	var id func(uint16) uint16
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uint16) {
 		have := id(want)
 		if want != have {
@@ -272,7 +272,7 @@ func TestUint16(t *testing.T) {
 
 func TestUint32(t *testing.T) {
 	var id func(uint32) uint32
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uint32) {
 		have := id(want)
 		if want != have {
@@ -286,7 +286,7 @@ func TestUint32(t *testing.T) {
 
 func TestUint64(t *testing.T) {
 	var id func(uint64) uint64
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uint64) {
 		have := id(want)
 		if want != have {
@@ -300,7 +300,7 @@ func TestUint64(t *testing.T) {
 
 func TestUintptr(t *testing.T) {
 	var id func(uintptr) uintptr
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want uintptr) {
 		have := id(want)
 		if want != have {
@@ -315,7 +315,7 @@ func TestUintptr(t *testing.T) {
 // matching floating point numbers exactly is always a little sketchy.
 func TestFloat32(t *testing.T) {
 	var id func(float32) float32
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want float32) {
 		have := id(want)
 		if want != have &&
@@ -337,7 +337,7 @@ func TestFloat32(t *testing.T) {
 
 func TestFloat64(t *testing.T) {
 	var id func(float64) float64
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want float64) {
 		have := id(want)
 		if want != have &&
@@ -361,7 +361,7 @@ func TestFloat64(t *testing.T) {
 
 func TestComplex64(t *testing.T) {
 	var id func(complex64) complex64
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want complex64) {
 		have := id(want)
 		if want == have ||
@@ -395,7 +395,7 @@ func TestComplex64(t *testing.T) {
 
 func TestComplex128(t *testing.T) {
 	var id func(complex128) complex128
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want complex128) {
 		have := id(want)
 		if want == have ||
@@ -431,7 +431,7 @@ func TestComplex128(t *testing.T) {
 
 func TestFunc(t *testing.T) {
 	var id func(func(int) int) func(int) int
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want func(int) int) {
 		have := id(want)
 		if have(18) != want(18) {
@@ -448,7 +448,7 @@ func TestFunc(t *testing.T) {
 
 func TestMap(t *testing.T) {
 	var id func(map[string]int) map[string]int
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want map[string]int) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
@@ -468,8 +468,8 @@ func TestSV(t *testing.T) {
 	ok := func(mk, ck string) {
 		var val *plgo.sV
 		var chk func(*plgo.sV) bool
-		pl.Bind(&val, mk)
-		pl.Bind(&chk, "sub {"+ck+"}")
+		pl.Eval(mk, &val)
+		pl.Eval("sub {"+ck+"}", &chk)
 		if !chk(val) {
 			t.Errorf("sub { %s }->(%s) fail", ck, mk)
 		}
@@ -489,7 +489,7 @@ func TestSV(t *testing.T) {
 
 func TestSlice(t *testing.T) {
 	var id func([]int) []int
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want []int) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
@@ -504,7 +504,7 @@ func TestSlice(t *testing.T) {
 
 func TestString(t *testing.T) {
 	var id func(string) string
-	pl.Bind(&id, `sub { $_[0] }`)
+	pl.Eval(`sub { $_[0] }`, &id)
 	ok := func(want string) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
@@ -519,7 +519,7 @@ func TestString(t *testing.T) {
 
 func TestMulti(t *testing.T) {
 	var fn func(int, int) (int, int, int, int, int)
-	pl.Bind(&fn, `sub {
+	pl.Eval(`sub {
 		use strict;
 		use warnings;
 		# the xgcd algorithm
@@ -541,17 +541,17 @@ func TestMulti(t *testing.T) {
 		}
 		return($u[0], $u, 0 - $u[1], $v, $u[2]) if $u[0] > 0;
 		return($u[1], $v, 0 - $u[0], $u, $u[2]);
-	}`)
+	}`, &fn)
 	a, b, c, d, e := fn(12345, 54321)
 	if a != 3617 || b != 12345 || c != 822 || d != 54321 || e != 3 {
 		t.Errorf("%d*%d-%d*%d ?= %d", a, b, c, d, e)
 	}
 }
 
-func BenchmarkBind(b *testing.B) {
+func BenchmarkEval(b *testing.B) {
 	var v int
 	for i := 0; i < b.N; i++ {
-		pl.Bind(&v, `123`)
+		pl.Eval(`123`, &v)
 		if v != 123 {
 			panic("ugh")
 		}
@@ -560,7 +560,7 @@ func BenchmarkBind(b *testing.B) {
 
 func BenchmarkCall(b *testing.B) {
 	var fn func() int
-	pl.Bind(&fn, `sub () { 123 }`)
+	pl.Eval(`sub () { 123 }`, &fn)
 	for i := 0; i < b.N; i++ {
 		if fn() != 123 {
 			panic("ugh")
