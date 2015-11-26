@@ -60,16 +60,24 @@ func New() *PL {
 // the list of results from Perl will be stored in the list of ptrs.
 // Not all types are supported, but many basic types are, including
 // functions.
-func (pl *PL) Eval(text string, ptrs ... interface{}) error {
+func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 	var err *C.SV
 	prevPL := activePL
 	activePL = pl
-	code := C.CString("[ do { \n#line 0 \"pl.Eval()\"\n" + text + "\n } ]")
+	code := C.CString("[ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
 	pl.mx.Lock()
 	av := C.glue_eval(pl.thx, code, &err)
 	pl.mx.Unlock()
 	activePL = prevPL
 
+	if err != nil {
+		e := pl.sV(err, true)
+		pl.mx.Lock()
+		C.glue_dec(pl.thx, av)
+		C.glue_dec(pl.thx, err)
+		pl.mx.Unlock()
+		return e
+	}
 	if len(ptrs) > 0 {
 		i := 0
 		cb := func(sv *C.SV) {
@@ -79,8 +87,8 @@ func (pl *PL) Eval(text string, ptrs ... interface{}) error {
 			pl.mx.Unlock()
 			val := reflect.ValueOf(ptrs[i]).Elem()
 			pl.valSV(&val, sv)
-			i++
 			pl.mx.Lock()
+			i++
 		}
 		pl.mx.Lock()
 		C.glue_walkAV(pl.thx, av, C.IV(uintptr(unsafe.Pointer(&cb))))
@@ -91,7 +99,6 @@ func (pl *PL) Eval(text string, ptrs ... interface{}) error {
 	pl.mx.Unlock()
 	return nil
 }
-
 
 // Live counts the number of live variables in the Perl instance.
 // This function is used for leak detection in the test code.
@@ -163,11 +170,10 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 		defer pl.mx.Unlock()
 		return C.glue_newHV(pl.thx, &dst[0])
 	case reflect.Ptr:
-		// TODO: for now we're only handling *plgo.SV unwrapping
-		var sv *sV
-		if t.AssignableTo(reflect.TypeOf(sv)) {
-			sv = src.Interface().(*sV)
-			return sv.sv
+		// TODO: *sV handling is a special case, but generic Ptr support
+		// could be implemented
+		if t == reflect.TypeOf((*sV)(nil)) {
+			return src.Interface().(*sV).sv
 		}
 	case reflect.String:
 		str := src.String()
@@ -245,24 +251,58 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			prevPL := activePL
 			activePL = pl
 			pl.mx.Lock()
-			C.glue_call_sv(pl.thx, cv.sv,
+			err := C.glue_call_sv(pl.thx, cv.sv,
 				&args[0], &rets[0], C.int(t.NumOut()))
 			pl.mx.Unlock()
 			activePL = prevPL
 
 			ret = make([]reflect.Value, t.NumOut())
-			for i, sv := range rets[0:len(ret)] {
-				ret[i] = reflect.New(t.Out(i)).Elem()
-				pl.valSV(&ret[i], sv)
-				pl.mx.Lock()
-				C.glue_dec(pl.thx, sv)
-				pl.mx.Unlock()
+
+			if err == nil {
+				// copy Perl rets to Go, zero out error rvs
+				j := 0
+				for i, _ := range ret {
+					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
+						ret[i] = reflect.Zero(t.Out(i))
+					} else {
+						ret[i] = reflect.New(t.Out(i)).Elem()
+						pl.valSV(&ret[i], rets[j])
+						j++
+					}
+				}
+			} else {
+				// copy Perl error to Go, zero out data rvs
+				err_found := false
+				for i, _ := range ret {
+					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
+						ret[i] = reflect.New(t.Out(i)).Elem()
+						pl.valSV(&ret[i], err)
+						err_found = true
+					} else {
+						ret[i] = reflect.Zero(t.Out(i))
+					}
+				}
+				if !err_found {
+					panic(pl.sV(err, true))
+				}
 			}
+			pl.mx.Lock()
+			for _, sv := range rets[0 : len(rets)-1] {
+				C.glue_dec(pl.thx, sv)
+			}
+			if err != nil {
+				C.glue_dec(pl.thx, err)
+			}
+			pl.mx.Unlock()
 			return
 		}))
 		cv = pl.sV(src, true)
 		return
 	case reflect.Interface:
+		if dst.Type() == reflect.TypeOf((*error)(nil)).Elem() {
+			dst.Set(reflect.ValueOf(pl.sV(src, true)))
+			return
+		}
 	case reflect.Map:
 		dst.Set(reflect.MakeMap(t))
 		cb := func(key *C.SV, val *C.SV) {
@@ -279,12 +319,9 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 		pl.mx.Unlock()
 		return
 	case reflect.Ptr:
-		// TODO: for now we're only handling *plgo.SV wrapping
-		// TODO: this is sketchy, refactor
-		var sv *sV
-		if dst.Type().AssignableTo(reflect.TypeOf(sv)) {
-			sv = pl.sV(src, false)
-			dst.Set(reflect.ValueOf(sv))
+		// TODO: for now we're only handling *plgo.sV wrapping
+		if dst.Type() == reflect.TypeOf((*sV)(nil)) {
+			dst.Set(reflect.ValueOf(pl.sV(src, false)))
 			return
 		}
 	case reflect.Slice:
@@ -345,10 +382,9 @@ func (pl *PL) sV(sv *C.SV, own bool) *sV {
 }
 
 func (sv *sV) Error() string {
-	var s string
-	v := reflect.ValueOf(s)
+	v := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
 	sv.pl.valSV(&v, sv.sv)
-	return s
+	return v.String()
 }
 
 //export goInvoke

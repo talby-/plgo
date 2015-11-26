@@ -38,7 +38,6 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     SAVETMPS;
     rv = eval_pv(text, FALSE);
     if(SvTRUE(ERRSV)) {
-        croak(SvPV_nolen(ERRSV));
         *errp = newSVsv(ERRSV);
     } else {
         *errp = NULL;

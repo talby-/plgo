@@ -28,9 +28,20 @@ func ExamplePL_Eval() {
 	p.Eval(`\&Digest::SHA::sha1_hex`, &sha1)
 	fmt.Println(sha1("hello"))
 
+	// handle errors from Perl
+	var sha1_careful func(string) (string, error)
+	p.Eval(`sub {
+		die "too short" unless length $_[0] > 0;
+		return Digest::SHA::sha1_hex($_[0])
+	}`, &sha1_careful)
+
+	_, err := sha1_careful("")
+	fmt.Println(err)
+
 	// Output:
 	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
 	// aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+	// too short at plgo.Eval() line 2.
 }
 
 func leak(t *testing.T, n int, obj interface{}, txt string) {
@@ -107,11 +118,19 @@ func TestEval(t *testing.T) {
 	if err != nil {
 		t.Errorf("perl error unexpected: %s", err.Error())
 	}
-	// TODO: test errors
-	//err = pl.Eval(`1 = 2`)
-	//if err == nil {
-	//	t.Errorf("perl error expected")
-	//}
+}
+
+func TestErr(t *testing.T) {
+	err := pl.Eval(`1 = 2`)
+	if err == nil {
+		t.Errorf("perl error expected")
+	}
+	var f func() error
+	pl.Eval(`sub { die "tippy\n" }`, &f)
+	err = f()
+	if err == nil || err.Error() != "tippy\n" {
+		t.Errorf("perl error expected")
+	}
 }
 
 func TestBool(t *testing.T) {
