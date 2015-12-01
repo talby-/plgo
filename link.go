@@ -85,14 +85,13 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 	if len(ptrs) > 0 {
 		i := 0
 		cb := func(sv *C.SV) {
-			pl.unsync(func() {
-				if i >= len(ptrs) {
-					return
-				}
-				val := reflect.ValueOf(ptrs[i]).Elem()
-				pl.valSV(&val, sv)
-				i++
-			})
+			if i < len(ptrs) {
+				pl.unsync(func() {
+					val := reflect.ValueOf(ptrs[i]).Elem()
+					pl.valSV(&val, sv)
+					i++
+				})
+			}
 		}
 		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkAV(pl.thx, av, ptr) })

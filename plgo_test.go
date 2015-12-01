@@ -29,13 +29,13 @@ func ExamplePL_Eval() {
 	fmt.Println(sha1("hello"))
 
 	// handle errors from Perl
-	var sha1_careful func(string) (string, error)
+	var sha1Careful func(string) (string, error)
 	p.Eval(`sub {
 		die "too short" unless length $_[0] > 0;
 		return Digest::SHA::sha1_hex($_[0])
-	}`, &sha1_careful)
+	}`, &sha1Careful)
 
-	_, err := sha1_careful("")
+	_, err := sha1Careful("")
 	fmt.Println(err)
 
 	// Output:
@@ -45,67 +45,67 @@ func ExamplePL_Eval() {
 }
 
 func leak(t *testing.T, n int, obj interface{}, txt string) {
-	var in_fn, rv_fn func()
+	var inFn, rvFn func()
 	switch val := obj.(type) {
 	case bool:
 		var fn func(bool)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case int:
 		var fn func(int)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case uint:
 		var fn func(uint)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case float64:
 		var fn func(float64)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case complex128:
 		var fn func(complex128)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case map[string]int:
 		var fn func(map[string]int)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case []int:
 		var fn func([]int)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case string:
 		var fn func(string)
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	case func():
 		var fn func(func())
 		pl.Eval(`sub {}`, &fn)
-		rv_fn = func() { fn(val) }
-		in_fn = func() { pl.Eval(txt, &val) }
+		rvFn = func() { fn(val) }
+		inFn = func() { pl.Eval(txt, &val) }
 	default:
 		t.Errorf("unsupported type for leak check")
 		return
 	}
 	a := pl.Live()
 	for i := 0; i < n; i++ {
-		rv_fn()
+		rvFn()
 	}
 	b := pl.Live()
 	if n <= b-a {
 		t.Errorf("leak: rv %d SVs over %d calls\n", b-a, n)
 	}
 	for i := 0; i < n; i++ {
-		in_fn()
+		inFn()
 	}
 	c := pl.Live()
 	if n <= c-b {
@@ -173,7 +173,7 @@ func TestBool(t *testing.T) {
 	ok(true)
 	ok(false)
 
-	leak(t, 128, true, `1`)
+	leak(t, 1024, true, `1`)
 }
 
 func TestInt(t *testing.T) {
@@ -190,7 +190,7 @@ func TestInt(t *testing.T) {
 	ok(0)
 	ok(1)
 
-	leak(t, 128, 12, `21`)
+	leak(t, 1024, 12, `21`)
 }
 
 func TestInt8(t *testing.T) {
@@ -270,7 +270,7 @@ func TestUint(t *testing.T) {
 	ok(0)
 	ok(1)
 
-	leak(t, 128, uint(12), `21`)
+	leak(t, 1024, uint(12), `21`)
 }
 
 func TestUint8(t *testing.T) {
@@ -387,7 +387,7 @@ func TestFloat64(t *testing.T) {
 	ok(math.Inf(1))
 	ok(math.NaN())
 
-	leak(t, 128, 12.2, `21.1`)
+	leak(t, 1024, 12.2, `21.1`)
 }
 
 func TestComplex64(t *testing.T) {
@@ -457,7 +457,7 @@ func TestComplex128(t *testing.T) {
 	ok(cmplx.Inf())
 	ok(cmplx.NaN())
 
-	leak(t, 128, 12.2i, `Math::Complex->new(0, 21.1)`)
+	leak(t, 1024, 12.2i, `Math::Complex->new(0, 21.1)`)
 }
 
 func TestFunc(t *testing.T) {
@@ -474,7 +474,7 @@ func TestFunc(t *testing.T) {
 	})
 
 	// GC on Go closures appears to be unpredictable
-	//leak(t, 128, func() { }, `sub {}`)
+	//leak(t, 1024, func() { }, `sub {}`)
 }
 
 func TestMap(t *testing.T) {
@@ -491,7 +491,7 @@ func TestMap(t *testing.T) {
 		"jam": 8,
 	})
 
-	leak(t, 128, map[string]int{"uuu": 17}, `{ vvv => 18 }`)
+	leak(t, 1024, map[string]int{"uuu": 17}, `{ vvv => 18 }`)
 }
 
 /*
@@ -530,7 +530,7 @@ func TestSlice(t *testing.T) {
 	ok([]int{})
 	ok([]int{1, 2, 3})
 
-	leak(t, 128, []int{17, 18}, `[ 19, 20 ]`)
+	leak(t, 1024, []int{17, 18}, `[ 19, 20 ]`)
 }
 
 func TestString(t *testing.T) {
@@ -545,7 +545,7 @@ func TestString(t *testing.T) {
 	ok("")
 	ok("a string")
 
-	leak(t, 128, "uuu", `"vvv"`)
+	leak(t, 1024, "uuu", `"vvv"`)
 }
 
 func TestMulti(t *testing.T) {
@@ -555,23 +555,17 @@ func TestMulti(t *testing.T) {
 		use warnings;
 		# the xgcd algorithm
 		my($u, $v) = @_;
-		my(@t, @u, @v, $q);
-		@u = (1, 0, $u);
-		@v = (0, 1, $v);
-		while($v[2] != 0) {
-			$q = int($u[2] / $v[2]);
-			$t[0] = $u[0] - ($v[0] * $q);
-			$u[0] = $v[0];
-			$v[0] = $t[0];
-			$t[1] = $u[1] - ($v[1] * $q);
-			$u[1] = $v[1];
-			$v[1] = $t[1];
-			$t[2] = $u[2] - ($v[2] * $q);
-			$u[2] = $v[2];
-			$v[2] = $t[2];
+		my($s, $old_s) = (0, 1);
+		my($t, $old_t) = (1, 0);
+		my($r, $old_r) = ($v, $u);
+		while($r) {
+			my $quotient = int($old_r / $r);
+			($old_r, $r) = ($r, $old_r - $quotient * $r);
+			($old_s, $s) = ($s, $old_s - $quotient * $s);
+			($old_t, $t) = ($t, $old_t - $quotient * $t);
 		}
-		return($u[0], $u, 0 - $u[1], $v, $u[2]) if $u[0] > 0;
-		return($u[1], $v, 0 - $u[0], $u, $u[2]);
+		return($old_s, $u, 0 - $old_t, $v, $old_r) if $old_s > 0;
+		return(0 - $old_s, $u, $old_t, $v, $old_r);
 	}`, &fn)
 	a, b, c, d, e := fn(12345, 54321)
 	if a != 3617 || b != 12345 || c != 822 || d != 54321 || e != 3 {
