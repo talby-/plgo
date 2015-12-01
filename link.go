@@ -66,11 +66,11 @@ func (pl *PL) sync(f func()) {
 
 func unsync(f func(*PL)) {
 	prevPL := activePL
-	prevPL.cx <- true
 	activePL = nil
+	prevPL.cx <- true
 	f(prevPL)
-	activePL = prevPL
 	<-prevPL.cx
+	activePL = prevPL
 }
 
 // Eval will execute a string of Perl code.  If ptrs are provided,
@@ -254,10 +254,11 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 
 			ret = make([]reflect.Value, t.NumOut())
 
+			var pErr *sV
 			if err == nil {
 				// copy Perl rets to Go, zero out error rvs
 				j := 0
-				for i, _ := range ret {
+				for i := range ret {
 					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
 						ret[i] = reflect.Zero(t.Out(i))
 					} else {
@@ -268,18 +269,18 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 				}
 			} else {
 				// copy Perl error to Go, zero out data rvs
-				err_found := false
-				for i, _ := range ret {
+				shouldPanic := true
+				for i := range ret {
 					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
 						ret[i] = reflect.New(t.Out(i)).Elem()
 						pl.valSV(&ret[i], err)
-						err_found = true
+						shouldPanic = false
 					} else {
 						ret[i] = reflect.Zero(t.Out(i))
 					}
 				}
-				if !err_found {
-					panic(pl.sV(err, true))
+				if shouldPanic {
+					pErr = pl.sV(err, true)
 				}
 			}
 			pl.sync(func() {
@@ -290,6 +291,9 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 					C.glue_dec(pl.thx, err)
 				}
 			})
+			if pErr != nil {
+				panic(pErr)
+			}
 			return
 		}))
 		cv = pl.sV(src, true)

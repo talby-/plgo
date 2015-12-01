@@ -123,7 +123,7 @@ func TestEval(t *testing.T) {
 func TestErr(t *testing.T) {
 	err := pl.Eval(`1 = 2`)
 	if err == nil {
-		t.Errorf("perl error expected")
+		t.Errorf("pl.Eval() error expected")
 	}
 	var f func() error
 	pl.Eval(`sub { die "tippy\n" }`, &f)
@@ -131,6 +131,18 @@ func TestErr(t *testing.T) {
 	if err == nil || err.Error() != "tippy\n" {
 		t.Errorf("perl error expected")
 	}
+
+	var g func() int
+	pl.Eval(`sub { die "tippy\n" }`, &g)
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("perl panic expected\n")
+			}
+		}()
+		g()
+	}()
 }
 
 func TestBool(t *testing.T) {
