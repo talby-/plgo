@@ -24,8 +24,6 @@ type PL struct {
 	valSVcmplx func(*sV) (float64, float64)
 }
 
-var activePL *PL
-
 type sV struct {
 	pl  *PL
 	sv  *C.SV
@@ -35,10 +33,10 @@ type sV struct {
 // We can not reliably hold pointers to Go objects in C
 // https://github.com/golang/go/issues/12416 documents the rules.
 // runtime.GC() can move objects in memory so we have to create an
-// indirection layer.  The liveVals map will serve this purpose.
+// indirection layer.  The liveCB map will serve this purpose.
 var (
-	liveValsSeq = 0
-	liveVals    = map[int]*reflect.Value{}
+	liveCBSeq = 0
+	liveCB    = map[int]func(unsafe.Pointer, unsafe.Pointer){}
 )
 
 func plFini(pl *PL) {
@@ -57,20 +55,14 @@ func New() *PL {
 
 func (pl *PL) sync(f func()) {
 	<-pl.cx
-	prevPL := activePL
-	activePL = pl
 	f()
-	activePL = prevPL
 	pl.cx <- true
 }
 
-func unsync(f func(*PL)) {
-	prevPL := activePL
-	activePL = nil
-	prevPL.cx <- true
-	f(prevPL)
-	<-prevPL.cx
-	activePL = prevPL
+func (pl *PL) unsync(f func()) {
+	pl.cx <- true
+	f()
+	<-pl.cx
 }
 
 // Eval will execute a string of Perl code.  If ptrs are provided,
@@ -93,12 +85,14 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 	if len(ptrs) > 0 {
 		i := 0
 		cb := func(sv *C.SV) {
-			if i >= len(ptrs) {
-				return
-			}
-			val := reflect.ValueOf(ptrs[i]).Elem()
-			pl.valSV(&val, sv)
-			i++
+			pl.unsync(func() {
+				if i >= len(ptrs) {
+					return
+				}
+				val := reflect.ValueOf(ptrs[i]).Elem()
+				pl.valSV(&val, sv)
+				i++
+			})
 		}
 		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkAV(pl.thx, av, ptr) })
@@ -154,9 +148,33 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 		return
 	case reflect.Chan:
 	case reflect.Func:
-		liveValsSeq++
-		liveVals[liveValsSeq] = &src
-		id := C.IV(liveValsSeq)
+		liveCBSeq++
+		id := C.IV(liveCBSeq)
+		liveCB[liveCBSeq] = func(arg unsafe.Pointer, ret unsafe.Pointer) {
+			pl.unsync(func() {
+				cnv := func(raw unsafe.Pointer, n int) []*C.SV {
+					return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
+						Data: uintptr(raw),
+						Len:  n,
+						Cap:  n,
+					}))
+				}
+				// xlate args - they are already mortal, don't take
+				// ownership unless they need to survive beyond the
+				// function call
+				args := make([]reflect.Value, t.NumIn())
+				for i, sv := range cnv(arg, len(args)) {
+					args[i] = reflect.New(t.In(i)).Elem()
+					pl.valSV(&args[i], sv)
+				}
+				// xlate rets - return as owning references and
+				// glue_invoke() will mortalize them for us
+				rets := cnv(ret, t.NumOut())
+				for i, val := range src.Call(args) {
+					rets[i] = pl.newSVval(val)
+				}
+			})
+		}
 		ni := C.IV(t.NumIn())
 		no := C.IV(t.NumOut())
 		pl.sync(func() { dst = C.glue_newCV(pl.thx, id, ni, no) })
@@ -191,12 +209,12 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 
 //export goStepHV
 func goStepHV(cb uintptr, key *C.SV, val *C.SV) {
-	unsync(func(_ *PL) { (*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val) })
+	(*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val)
 }
 
 //export goStepAV
 func goStepAV(cb uintptr, sv *C.SV) {
-	unsync(func(_ *PL) { (*(*func(*C.SV))(unsafe.Pointer(cb)))(sv) })
+	(*(*func(*C.SV))(unsafe.Pointer(cb)))(sv)
 }
 
 func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
@@ -306,11 +324,13 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 	case reflect.Map:
 		dst.Set(reflect.MakeMap(t))
 		cb := func(key *C.SV, val *C.SV) {
-			k := reflect.New(t.Key()).Elem()
-			pl.valSV(&k, key)
-			v := reflect.New(t.Elem()).Elem()
-			pl.valSV(&v, val)
-			dst.SetMapIndex(k, v)
+			pl.unsync(func() {
+				k := reflect.New(t.Key()).Elem()
+				pl.valSV(&k, key)
+				v := reflect.New(t.Elem()).Elem()
+				pl.valSV(&v, val)
+				dst.SetMapIndex(k, v)
+			})
 		}
 		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
@@ -325,9 +345,11 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 		// TODO: this is sketchy, refactor
 		tmp := reflect.MakeSlice(t, 0, 0)
 		cb := func(sv *C.SV) {
-			val := reflect.New(t.Elem()).Elem()
-			pl.valSV(&val, sv)
-			tmp = reflect.Append(tmp, val)
+			pl.unsync(func() {
+				val := reflect.New(t.Elem()).Elem()
+				pl.valSV(&val, sv)
+				tmp = reflect.Append(tmp, val)
+			})
 		}
 		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkAV(pl.thx, src, ptr) })
@@ -376,35 +398,11 @@ func (sv *sV) Error() string {
 
 //export goInvoke
 func goInvoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
-	unsync(func(pl *PL) {
-		cnv := func(raw unsafe.Pointer, n int) []*C.SV {
-			return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
-				Data: uintptr(raw),
-				Len:  n,
-				Cap:  n,
-			}))
-		}
-		// recover info
-		val := liveVals[data]
-		t := val.Type()
-		// xlate args - they are already mortal, don't take ownership unless
-		// they need to survive beyond the function call
-		args := make([]reflect.Value, t.NumIn())
-		for i, sv := range cnv(arg, len(args)) {
-			args[i] = reflect.New(t.In(i)).Elem()
-			pl.valSV(&args[i], sv)
-		}
-		// xlate rets - return as owning references and glue_invoke() will
-		// mortalize them for us
-		rets := cnv(ret, t.NumOut())
-		for i, val := range val.Call(args) {
-			rets[i] = pl.newSVval(val)
-		}
-	})
+	liveCB[data](arg, ret)
 }
 
 //export goRelease
 func goRelease(data int) {
 	// if this gets complicated, remember to unlock/lock pl.mx
-	delete(liveVals, data)
+	delete(liveCB, data)
 }
