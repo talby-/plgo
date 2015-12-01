@@ -14,7 +14,7 @@ void glue_inc(pTHX_ SV *);
 void glue_dec(pTHX_ SV *);
 void glue_track(pTHX_ SV *);
 
-int glue_count_live(pTHX);
+IV glue_count_live(pTHX);
 
 bool glue_getBool(pTHX_ SV *);
 IV glue_getIV(pTHX_ SV *);

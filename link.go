@@ -13,14 +13,13 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"sync"
 	"unsafe"
 )
 
 // PL holds a Perl runtime
 type PL struct {
 	thx        C.tTHX
-	mx         sync.Mutex
+	cx         chan bool
 	newSVcmplx func(float64, float64) *sV
 	valSVcmplx func(*sV) (float64, float64)
 }
@@ -43,17 +42,35 @@ var (
 )
 
 func plFini(pl *PL) {
-	pl.mx.Lock()
-	C.glue_fini(pl.thx)
-	pl.mx.Unlock()
+	pl.sync(func() { C.glue_fini(pl.thx) })
 }
 
 // New initializes a Perl runtime
 func New() *PL {
 	pl := new(PL)
 	pl.thx = C.glue_init()
+	pl.cx = make(chan bool, 1)
+	pl.cx <- true
 	runtime.SetFinalizer(pl, plFini)
 	return pl
+}
+
+func (pl *PL) sync(f func()) {
+	<-pl.cx
+	prevPL := activePL
+	activePL = pl
+	f()
+	activePL = prevPL
+	pl.cx <- true
+}
+
+func unsync(f func(*PL)) {
+	prevPL := activePL
+	prevPL.cx <- true
+	activePL = nil
+	f(prevPL)
+	activePL = prevPL
+	<-prevPL.cx
 }
 
 // Eval will execute a string of Perl code.  If ptrs are provided,
@@ -61,21 +78,16 @@ func New() *PL {
 // Not all types are supported, but many basic types are, including
 // functions.
 func (pl *PL) Eval(text string, ptrs ...interface{}) error {
-	var err *C.SV
-	prevPL := activePL
-	activePL = pl
+	var err, av *C.SV
 	code := C.CString("[ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
-	pl.mx.Lock()
-	av := C.glue_eval(pl.thx, code, &err)
-	pl.mx.Unlock()
-	activePL = prevPL
+	pl.sync(func() { av = C.glue_eval(pl.thx, code, &err) })
 
 	if err != nil {
 		e := pl.sV(err, true)
-		pl.mx.Lock()
-		C.glue_dec(pl.thx, av)
-		C.glue_dec(pl.thx, err)
-		pl.mx.Unlock()
+		pl.sync(func() {
+			C.glue_dec(pl.thx, av)
+			C.glue_dec(pl.thx, err)
+		})
 		return e
 	}
 	if len(ptrs) > 0 {
@@ -84,19 +96,14 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 			if i >= len(ptrs) {
 				return
 			}
-			pl.mx.Unlock()
 			val := reflect.ValueOf(ptrs[i]).Elem()
 			pl.valSV(&val, sv)
-			pl.mx.Lock()
 			i++
 		}
-		pl.mx.Lock()
-		C.glue_walkAV(pl.thx, av, C.IV(uintptr(unsafe.Pointer(&cb))))
-		pl.mx.Unlock()
+		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		pl.sync(func() { C.glue_walkAV(pl.thx, av, ptr) })
 	}
-	pl.mx.Lock()
-	C.glue_dec(pl.thx, av)
-	pl.mx.Unlock()
+	pl.sync(func() { C.glue_dec(pl.thx, av) })
 	return nil
 }
 
@@ -104,34 +111,30 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 // This function is used for leak detection in the test code.
 // runtime.GC() must be called to get accurate live value counts.
 func (pl *PL) Live() int {
-	pl.mx.Lock()
-	defer pl.mx.Unlock()
-	return int(C.glue_count_live(pl.thx))
+	var rv C.IV
+	pl.sync(func() { rv = C.glue_count_live(pl.thx) })
+	return int(rv)
 }
 
-func (pl *PL) newSVval(src reflect.Value) *C.SV {
+func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newBool(pl.thx, C.bool(src.Bool()))
+		val := C.bool(src.Bool())
+		pl.sync(func() { dst = C.glue_newBool(pl.thx, val) })
+		return
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newIV(pl.thx, C.IV(src.Int()))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newUV(pl.thx, C.UV(src.Uint()))
-	case reflect.Uintptr:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newUV(pl.thx, C.UV(src.Uint()))
+		val := C.IV(src.Int())
+		pl.sync(func() { dst = C.glue_newIV(pl.thx, val) })
+		return
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		val := C.UV(src.Uint())
+		pl.sync(func() { dst = C.glue_newUV(pl.thx, val) })
+		return
 	case reflect.Float32, reflect.Float64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newNV(pl.thx, C.NV(src.Float()))
+		val := C.NV(src.Float())
+		pl.sync(func() { dst = C.glue_newNV(pl.thx, val) })
+		return
 	case reflect.Complex64, reflect.Complex128:
 		if pl.newSVcmplx == nil {
 			pl.Eval(`
@@ -143,32 +146,31 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 		return pl.newSVcmplx(real(v), imag(v)).sv
 	case reflect.Array,
 		reflect.Slice:
-		dst := make([]*C.SV, 1+src.Len())
+		lst := make([]*C.SV, 1+src.Len())
 		for i := 0; i < src.Len(); i++ {
-			dst[i] = pl.newSVval(src.Index(i))
+			lst[i] = pl.newSVval(src.Index(i))
 		}
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newAV(pl.thx, &dst[0])
+		pl.sync(func() { dst = C.glue_newAV(pl.thx, &lst[0]) })
+		return
 	case reflect.Chan:
 	case reflect.Func:
 		liveValsSeq++
-		id := liveValsSeq
-		liveVals[id] = &src
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newCV(pl.thx, C.IV(id), C.IV(t.NumIn()), C.IV(t.NumOut()))
+		liveVals[liveValsSeq] = &src
+		id := C.IV(liveValsSeq)
+		ni := C.IV(t.NumIn())
+		no := C.IV(t.NumOut())
+		pl.sync(func() { dst = C.glue_newCV(pl.thx, id, ni, no) })
+		return
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
-		dst := make([]*C.SV, 1+2*len(keys))
+		lst := make([]*C.SV, 1+2*len(keys))
 		for i, key := range keys {
-			dst[i<<1] = pl.newSVval(key)
-			dst[i<<1+1] = pl.newSVval(src.MapIndex(key))
+			lst[i<<1] = pl.newSVval(key)
+			lst[i<<1+1] = pl.newSVval(src.MapIndex(key))
 		}
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newHV(pl.thx, &dst[0])
+		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0]) })
+		return
 	case reflect.Ptr:
 		// TODO: *sV handling is a special case, but generic Ptr support
 		// could be implemented
@@ -177,55 +179,53 @@ func (pl *PL) newSVval(src reflect.Value) *C.SV {
 		}
 	case reflect.String:
 		str := src.String()
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		return C.glue_newPV(pl.thx, C.CString(str), C.STRLEN(len(str)))
+		cs := C.CString(str)
+		cl := C.STRLEN(len(str))
+		pl.sync(func() { dst = C.glue_newPV(pl.thx, cs, cl) })
+		return
 	case reflect.Struct:
 	case reflect.UnsafePointer:
 	}
 	panic("unhandled type \"" + src.Kind().String() + "\"")
-	return nil
 }
 
 //export goStepHV
 func goStepHV(cb uintptr, key *C.SV, val *C.SV) {
-	//the callee is responsible for unlocking the pl.mx
-	(*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val)
+	unsync(func(_ *PL) { (*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val) })
 }
 
 //export goStepAV
 func goStepAV(cb uintptr, sv *C.SV) {
-	//the callee is responsible for unlocking the pl.mx
-	(*(*func(*C.SV))(unsafe.Pointer(cb)))(sv)
+	unsync(func(_ *PL) { (*(*func(*C.SV))(unsafe.Pointer(cb)))(sv) })
 }
 
 func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 	t := dst.Type()
 	switch t.Kind() {
 	case reflect.Bool:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		dst.SetBool(bool(C.glue_getBool(pl.thx, src)))
+		var val C.bool
+		pl.sync(func() { val = C.glue_getBool(pl.thx, src) })
+		dst.SetBool(bool(val))
 		return
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		dst.SetInt(int64(C.glue_getIV(pl.thx, src)))
+		var val C.IV
+		pl.sync(func() { val = C.glue_getIV(pl.thx, src) })
+		dst.SetInt(int64(val))
 		return
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		dst.SetUint(uint64(C.glue_getUV(pl.thx, src)))
+		var val C.UV
+		pl.sync(func() { val = C.glue_getUV(pl.thx, src) })
+		dst.SetUint(uint64(val))
 		return
 	case reflect.Uintptr:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		dst.SetUint(uint64(C.glue_getUV(pl.thx, src)))
+		var val C.UV
+		pl.sync(func() { val = C.glue_getUV(pl.thx, src) })
+		dst.SetUint(uint64(val))
 		return
 	case reflect.Float32, reflect.Float64:
-		pl.mx.Lock()
-		defer pl.mx.Unlock()
-		dst.SetFloat(float64(C.glue_getNV(pl.thx, src)))
+		var val C.NV
+		pl.sync(func() { val = C.glue_getNV(pl.thx, src) })
+		dst.SetFloat(float64(val))
 		return
 	case reflect.Complex64, reflect.Complex128:
 		if pl.valSVcmplx == nil {
@@ -248,13 +248,9 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			}
 			rets := make([]*C.SV, 1+t.NumOut())
 
-			prevPL := activePL
-			activePL = pl
-			pl.mx.Lock()
-			err := C.glue_call_sv(pl.thx, cv.sv,
-				&args[0], &rets[0], C.int(t.NumOut()))
-			pl.mx.Unlock()
-			activePL = prevPL
+			var err *C.SV
+			no := C.int(t.NumOut())
+			pl.sync(func() { err = C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no) })
 
 			ret = make([]reflect.Value, t.NumOut())
 
@@ -286,41 +282,38 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 					panic(pl.sV(err, true))
 				}
 			}
-			pl.mx.Lock()
-			for _, sv := range rets[0 : len(rets)-1] {
-				C.glue_dec(pl.thx, sv)
-			}
-			if err != nil {
-				C.glue_dec(pl.thx, err)
-			}
-			pl.mx.Unlock()
+			pl.sync(func() {
+				for _, sv := range rets[0 : len(rets)-1] {
+					C.glue_dec(pl.thx, sv)
+				}
+				if err != nil {
+					C.glue_dec(pl.thx, err)
+				}
+			})
 			return
 		}))
 		cv = pl.sV(src, true)
 		return
 	case reflect.Interface:
-		if dst.Type() == reflect.TypeOf((*error)(nil)).Elem() {
+		if t == reflect.TypeOf((*error)(nil)).Elem() {
 			dst.Set(reflect.ValueOf(pl.sV(src, true)))
 			return
 		}
 	case reflect.Map:
 		dst.Set(reflect.MakeMap(t))
 		cb := func(key *C.SV, val *C.SV) {
-			pl.mx.Unlock()
 			k := reflect.New(t.Key()).Elem()
 			pl.valSV(&k, key)
 			v := reflect.New(t.Elem()).Elem()
 			pl.valSV(&v, val)
 			dst.SetMapIndex(k, v)
-			pl.mx.Lock()
 		}
-		pl.mx.Lock()
-		C.glue_walkHV(pl.thx, src, C.IV(uintptr(unsafe.Pointer(&cb))))
-		pl.mx.Unlock()
+		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
 		return
 	case reflect.Ptr:
 		// TODO: for now we're only handling *plgo.sV wrapping
-		if dst.Type() == reflect.TypeOf((*sV)(nil)) {
+		if t == reflect.TypeOf((*sV)(nil)) {
 			dst.Set(reflect.ValueOf(pl.sV(src, false)))
 			return
 		}
@@ -328,23 +321,19 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 		// TODO: this is sketchy, refactor
 		tmp := reflect.MakeSlice(t, 0, 0)
 		cb := func(sv *C.SV) {
-			pl.mx.Unlock()
 			val := reflect.New(t.Elem()).Elem()
 			pl.valSV(&val, sv)
 			tmp = reflect.Append(tmp, val)
-			pl.mx.Lock()
 		}
-		pl.mx.Lock()
-		C.glue_walkAV(pl.thx, src, C.IV(uintptr(unsafe.Pointer(&cb))))
-		pl.mx.Unlock()
+		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		pl.sync(func() { C.glue_walkAV(pl.thx, src, ptr) })
 		dst.Set(tmp)
 		return
 	case reflect.String:
+		var val *C.char
 		var len C.STRLEN
-		pl.mx.Lock()
-		cs := C.glue_getPV(pl.thx, src, &len)
-		pl.mx.Unlock()
-		dst.SetString(C.GoStringN(cs, C.int(len)))
+		pl.sync(func() { val = C.glue_getPV(pl.thx, src, &len) })
+		dst.SetString(C.GoStringN(val, C.int(len)))
 		return
 	case reflect.Struct:
 	case reflect.UnsafePointer:
@@ -357,9 +346,7 @@ func svFini(sv *sV) {
 		if false {
 			fmt.Printf("RELEASE %p\n", sv.sv)
 		}
-		sv.pl.mx.Lock()
-		C.glue_dec(sv.pl.thx, sv.sv)
-		sv.pl.mx.Unlock()
+		sv.pl.sync(func() { C.glue_dec(sv.pl.thx, sv.sv) })
 	}
 }
 
@@ -368,14 +355,10 @@ func (pl *PL) sV(sv *C.SV, own bool) *sV {
 	self.pl = pl
 	self.sv = sv
 	self.own = own
-	pl.mx.Lock()
-	C.glue_inc(pl.thx, sv)
-	pl.mx.Unlock()
+	pl.sync(func() { C.glue_inc(pl.thx, sv) })
 	runtime.SetFinalizer(&self, svFini)
 	if self.own && false {
-		pl.mx.Lock()
-		C.glue_track(pl.thx, sv)
-		pl.mx.Unlock()
+		pl.sync(func() { C.glue_track(pl.thx, sv) })
 		fmt.Printf("ACQUIRE %p\n", self.sv)
 	}
 	return &self
@@ -389,34 +372,31 @@ func (sv *sV) Error() string {
 
 //export goInvoke
 func goInvoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
-	if activePL == nil {
-		panic("activePL not set")
-	}
-	activePL.mx.Unlock()
-	cnv := func(raw unsafe.Pointer, n int) []*C.SV {
-		return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
-			Data: uintptr(raw),
-			Len:  n,
-			Cap:  n,
-		}))
-	}
-	// recover info
-	val := liveVals[data]
-	t := val.Type()
-	// xlate args - they are already mortal, don't take ownership unless
-	// they need to survive beyond the function call
-	args := make([]reflect.Value, t.NumIn())
-	for i, sv := range cnv(arg, len(args)) {
-		args[i] = reflect.New(t.In(i)).Elem()
-		activePL.valSV(&args[i], sv)
-	}
-	// xlate rets - return as owning references and glue_invoke() will
-	// mortalize them for us
-	rets := cnv(ret, t.NumOut())
-	for i, val := range val.Call(args) {
-		rets[i] = activePL.newSVval(val)
-	}
-	activePL.mx.Lock()
+	unsync(func(pl *PL) {
+		cnv := func(raw unsafe.Pointer, n int) []*C.SV {
+			return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
+				Data: uintptr(raw),
+				Len:  n,
+				Cap:  n,
+			}))
+		}
+		// recover info
+		val := liveVals[data]
+		t := val.Type()
+		// xlate args - they are already mortal, don't take ownership unless
+		// they need to survive beyond the function call
+		args := make([]reflect.Value, t.NumIn())
+		for i, sv := range cnv(arg, len(args)) {
+			args[i] = reflect.New(t.In(i)).Elem()
+			pl.valSV(&args[i], sv)
+		}
+		// xlate rets - return as owning references and glue_invoke() will
+		// mortalize them for us
+		rets := cnv(ret, t.NumOut())
+		for i, val := range val.Call(args) {
+			rets[i] = pl.newSVval(val)
+		}
+	})
 }
 
 //export goRelease

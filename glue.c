@@ -119,14 +119,14 @@ void glue_track(pTHX_ SV *sv) {
     sv_magicext(sv, 0, PERL_MAGIC_ext, &dbg_vtbl, (char *)0xc0ffee, 0);
 }
 
-int glue_count_live(pTHX) {
+IV glue_count_live(pTHX) {
     PERL_SET_CONTEXT(my_perl);
     /* Devel::Leak proved to be too expensive to run during scans, so
      * this lifts a bit of it's algorithm for something to give us
      * simple live variable allocation counts */
     SV *sva;
     int i, n;
-    int rv = 0;
+    IV rv = 0;
     for(sva = PL_sv_arenaroot; sva; sva = (SV *)SvANY(sva))
         for(i = 1, n = SvREFCNT(sva); i < n; i++)
             if(SvTYPE(sva + i) != SVTYPEMASK)
