@@ -35,8 +35,8 @@ type sV struct {
 // runtime.GC() can move objects in memory so we have to create an
 // indirection layer.  The liveCB map will serve this purpose.
 var (
-	liveCBSeq = 0
-	liveCB    = map[int]func(unsafe.Pointer, unsafe.Pointer){}
+	liveCBSeq = uint(0)
+	liveCB    = map[uint]func(**C.SV, **C.SV){}
 )
 
 func plFini(pl *PL) {
@@ -48,8 +48,8 @@ func New() *PL {
 	pl := new(PL)
 	pl.thx = C.glue_init()
 	pl.cx = make(chan bool, 1)
-	pl.cx <- true
 	runtime.SetFinalizer(pl, plFini)
+	pl.cx <- true // this PL is now open for business
 	return pl
 }
 
@@ -63,6 +63,14 @@ func (pl *PL) unsync(f func()) {
 	pl.cx <- true
 	f()
 	<-pl.cx
+}
+
+func sliceOf(raw **C.SV, n int) []*C.SV {
+	return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: uintptr(unsafe.Pointer(raw)),
+		Len:  n,
+		Cap:  n,
+	}))
 }
 
 // Eval will execute a string of Perl code.  If ptrs are provided,
@@ -83,17 +91,16 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 		return e
 	}
 	if len(ptrs) > 0 {
-		i := 0
-		cb := func(sv *C.SV) {
-			if i < len(ptrs) {
-				pl.unsync(func() {
+		cb := func(raw **C.SV, n C.IV) {
+			pl.unsync(func() {
+				lst := sliceOf(raw, int(n))
+				for i, sv := range lst {
 					val := reflect.ValueOf(ptrs[i]).Elem()
 					pl.valSV(&val, sv)
-					i++
-				})
-			}
+				}
+			})
 		}
-		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkAV(pl.thx, av, ptr) })
 	}
 	pl.sync(func() { C.glue_dec(pl.thx, av) })
@@ -148,27 +155,20 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	case reflect.Chan:
 	case reflect.Func:
 		liveCBSeq++
-		id := C.IV(liveCBSeq)
-		liveCB[liveCBSeq] = func(arg unsafe.Pointer, ret unsafe.Pointer) {
+		id := C.UV(liveCBSeq)
+		liveCB[liveCBSeq] = func(arg **C.SV, ret **C.SV) {
 			pl.unsync(func() {
-				cnv := func(raw unsafe.Pointer, n int) []*C.SV {
-					return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
-						Data: uintptr(raw),
-						Len:  n,
-						Cap:  n,
-					}))
-				}
 				// xlate args - they are already mortal, don't take
 				// ownership unless they need to survive beyond the
 				// function call
 				args := make([]reflect.Value, t.NumIn())
-				for i, sv := range cnv(arg, len(args)) {
+				for i, sv := range sliceOf(arg, len(args)) {
 					args[i] = reflect.New(t.In(i)).Elem()
 					pl.valSV(&args[i], sv)
 				}
 				// xlate rets - return as owning references and
 				// glue_invoke() will mortalize them for us
-				rets := cnv(ret, t.NumOut())
+				rets := sliceOf(ret, t.NumOut())
 				for i, val := range src.Call(args) {
 					rets[i] = pl.newSVval(val)
 				}
@@ -204,16 +204,6 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	case reflect.UnsafePointer:
 	}
 	panic("unhandled type \"" + src.Kind().String() + "\"")
-}
-
-//export goStepHV
-func goStepHV(cb uintptr, key *C.SV, val *C.SV) {
-	(*(*func(*C.SV, *C.SV))(unsafe.Pointer(cb)))(key, val)
-}
-
-//export goStepAV
-func goStepAV(cb uintptr, sv *C.SV) {
-	(*(*func(*C.SV))(unsafe.Pointer(cb)))(sv)
 }
 
 func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
@@ -266,7 +256,7 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			rets := make([]*C.SV, 1+t.NumOut())
 
 			var err *C.SV
-			no := C.int(t.NumOut())
+			no := C.IV(t.NumOut())
 			pl.sync(func() { err = C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no) })
 
 			ret = make([]reflect.Value, t.NumOut())
@@ -322,16 +312,25 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 		}
 	case reflect.Map:
 		dst.Set(reflect.MakeMap(t))
-		cb := func(key *C.SV, val *C.SV) {
+		cb := func(raw **C.SV, n int) {
+			if raw == nil {
+				return
+			}
 			pl.unsync(func() {
-				k := reflect.New(t.Key()).Elem()
-				pl.valSV(&k, key)
-				v := reflect.New(t.Elem()).Elem()
-				pl.valSV(&v, val)
-				dst.SetMapIndex(k, v)
+				var k reflect.Value
+				for i, sv := range sliceOf(raw, int(n)) {
+					if i&1 == 0 {
+						k = reflect.New(t.Key()).Elem()
+						pl.valSV(&k, sv)
+					} else {
+						v := reflect.New(t.Elem()).Elem()
+						pl.valSV(&v, sv)
+						dst.SetMapIndex(k, v)
+					}
+				}
 			})
 		}
-		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
 		return
 	case reflect.Ptr:
@@ -341,18 +340,21 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			return
 		}
 	case reflect.Slice:
-		// TODO: this is sketchy, refactor
-		tmp := reflect.MakeSlice(t, 0, 0)
-		cb := func(sv *C.SV) {
+		cb := func(raw **C.SV, n C.IV) {
 			pl.unsync(func() {
-				val := reflect.New(t.Elem()).Elem()
-				pl.valSV(&val, sv)
-				tmp = reflect.Append(tmp, val)
+				tmp := reflect.MakeSlice(t, 0, int(n))
+				if raw != nil {
+					for _, sv := range sliceOf(raw, int(n)) {
+						val := reflect.New(t.Elem()).Elem()
+						pl.valSV(&val, sv)
+						tmp = reflect.Append(tmp, val)
+					}
+				}
+				dst.Set(tmp)
 			})
 		}
-		ptr := C.IV(uintptr(unsafe.Pointer(&cb)))
+		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
 		pl.sync(func() { C.glue_walkAV(pl.thx, src, ptr) })
-		dst.Set(tmp)
 		return
 	case reflect.String:
 		var val *C.char
@@ -395,13 +397,17 @@ func (sv *sV) Error() string {
 	return v.String()
 }
 
+//export goList
+func goList(cb uintptr, lst **C.SV, n C.IV) {
+	(*(*func(**C.SV, C.IV))(unsafe.Pointer(cb)))(lst, n)
+}
+
 //export goInvoke
-func goInvoke(data int, arg unsafe.Pointer, ret unsafe.Pointer) {
+func goInvoke(data uint, arg **C.SV, ret **C.SV) {
 	liveCB[data](arg, ret)
 }
 
 //export goRelease
-func goRelease(data int) {
-	// if this gets complicated, remember to unlock/lock pl.mx
+func goRelease(data uint) {
 	delete(liveCB, data)
 }

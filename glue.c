@@ -49,7 +49,7 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     return rv;
 }
 
-SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
+SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, IV n) {
     I32 ax;
     int count;
     int flags;
@@ -57,9 +57,6 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, int n) {
     dSP;
 
     PERL_SET_CONTEXT(my_perl);
-    if(!SvROK(sv) || SvTYPE(SvRV(sv)) != SVt_PVCV) {
-        croak("sv %p is not a function", sv);
-    }
     switch(n) {
       case 0: flags = G_VOID; break;
       case 1: flags = G_SCALAR; break;
@@ -159,38 +156,46 @@ const char *glue_getPV(pTHX_ SV *sv, STRLEN *len) {
     return SvPV(sv, *len);
 }
 
-bool glue_walkAV(pTHX_ SV *sv, IV data) {
+void glue_walkAV(pTHX_ SV *sv, UV data) {
+    SV **lst = NULL;
+    I32 len = 0;
+
     PERL_SET_CONTEXT(my_perl);
+    SAVETMPS;
     if(SvROK(sv)) {
         AV *av = (AV *)SvRV(sv);
         if(SvTYPE((SV *)av) == SVt_PVAV) {
-            I32 i = 0;
-            SAVETMPS;
-            SV **eltp;
-            while((eltp = av_fetch(av, i++, 0)))
-                goStepAV(data, *eltp);
-            FREETMPS;
-            return TRUE;
+            lst = AvARRAY(av);
+            len = 1 + av_top_index(av);
         }
     }
-    return FALSE;
+    goList(data, lst, len);
+    FREETMPS;
 }
 
-bool glue_walkHV(pTHX_ SV *sv, IV data) {
+void glue_walkHV(pTHX_ SV *sv, UV data) {
+    SV **lst = NULL;
+    IV len = 0;
+
     PERL_SET_CONTEXT(my_perl);
+    SAVETMPS;
     if(SvROK(sv)) {
         HV *hv = (HV *)SvRV(sv);
         if(SvTYPE((SV *)hv) == SVt_PVHV) {
             HE *he;
-            SAVETMPS;
+            SV **p;
+            lst = alloca(HvKEYS(hv) << 1);
+            p = lst;
             hv_iterinit(hv);
-            while((he = hv_iternext(hv)))
-                goStepHV(data, HeSVKEY_force(he), HeVAL(he));
-            FREETMPS;
-            return TRUE;
+            while((he = hv_iternext(hv))) {
+                *p++ = HeSVKEY_force(he);
+                *p++ = HeVAL(he);
+            }
+            len = p - lst;
         }
     }
-    return FALSE;
+    goList(data, lst, len);
+    FREETMPS;
 }
 
 SV *glue_newBool(pTHX_ bool v) {
@@ -287,7 +292,7 @@ XS(glue_invoke)
 }
 
 /* Tie a CV to glue_invoke() and stash the Go details */
-SV *glue_newCV(pTHX_ IV call, IV num_in, IV num_out) {
+SV *glue_newCV(pTHX_ UV call, IV num_in, IV num_out) {
     PERL_SET_CONTEXT(my_perl);
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
     glue_cb_t cb = { call, num_in, num_out };
