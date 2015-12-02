@@ -46,55 +46,73 @@ func ExamplePL_Eval() {
 
 func leak(t *testing.T, n int, obj interface{}, txt string) {
 	var inFn, rvFn func()
+	body := fmt.Sprintf(`(sub {}, sub {%s})`, txt)
 	switch val := obj.(type) {
 	case bool:
-		var fn func(bool)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v bool
+		var ifn func(bool)
+		var ofn func() bool
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case int:
-		var fn func(int)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v int
+		var ifn func(int)
+		var ofn func() int
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case uint:
-		var fn func(uint)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v uint
+		var ifn func(uint)
+		var ofn func() uint
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case float64:
-		var fn func(float64)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v float64
+		var ifn func(float64)
+		var ofn func() float64
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case complex128:
-		var fn func(complex128)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
-	case map[string]int:
-		var fn func(map[string]int)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v complex128
+		var ifn func(complex128)
+		var ofn func() complex128
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
+	case map[int]int:
+		var v map[int]int
+		var ifn func(map[int]int)
+		var ofn func() map[int]int
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case []int:
-		var fn func([]int)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v []int
+		var ifn func([]int)
+		var ofn func() []int
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case string:
-		var fn func(string)
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v string
+		var ifn func(string)
+		var ofn func() string
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	case func():
-		var fn func(func())
-		pl.Eval(`sub {}`, &fn)
-		rvFn = func() { fn(val) }
-		inFn = func() { pl.Eval(txt, &val) }
+		var v func()
+		var ifn func(func())
+		var ofn func() func()
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
 	default:
 		t.Errorf("unsupported type for leak check")
-		return
 	}
 	a := pl.Live()
 	for i := 0; i < n; i++ {
@@ -478,20 +496,17 @@ func TestFunc(t *testing.T) {
 }
 
 func TestMap(t *testing.T) {
-	var id func(map[string]int) map[string]int
+	var id func(map[int]int) map[int]int
 	pl.Eval(`sub { $_[0] }`, &id)
-	ok := func(want map[string]int) {
+	ok := func(want map[int]int) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
-			t.Errorf("id(%v map[string]int) => %v", want, have)
+			t.Errorf("id(%v map[int]int) => %v", want, have)
 		}
 	}
-	ok(map[string]int{
-		"fun": 12,
-		"jam": 8,
-	})
+	ok(map[int]int{66: 12, 88: 8})
 
-	leak(t, 1024, map[string]int{"uuu": 17}, `{ vvv => 18 }`)
+	leak(t, 1024, map[int]int{37: 17}, `{ 38 => 18 }`)
 }
 
 /*
@@ -574,21 +589,205 @@ func TestMulti(t *testing.T) {
 }
 
 func BenchmarkEval(b *testing.B) {
-	var v int
 	for i := 0; i < b.N; i++ {
-		pl.Eval(`123`, &v)
-		if v != 123 {
-			panic("ugh")
-		}
+		pl.Eval(`1`)
 	}
 }
 
 func BenchmarkCall(b *testing.B) {
-	var fn func() int
-	pl.Eval(`sub () { 123 }`, &fn)
+	var fn func()
+	pl.Eval(`sub () { }`, &fn)
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if fn() != 123 {
-			panic("ugh")
-		}
+		fn()
+	}
+}
+
+func BenchmarkInBool(b *testing.B) {
+	v := true
+	var fn func(bool)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInInt(b *testing.B) {
+	v := 1
+	var fn func(int)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInUint(b *testing.B) {
+	v := uint(1)
+	var fn func(uint)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInFloat(b *testing.B) {
+	v := 1.0
+	var fn func(float64)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInComplex(b *testing.B) {
+	v := complex(1.0, 1.0)
+	var fn func(complex128)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInMap(b *testing.B) {
+	v := map[int]int{1: 2, 3: 4}
+	var fn func(map[int]int)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInList(b *testing.B) {
+	v := []int{1, 2, 3, 4}
+	var fn func([]int)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInString(b *testing.B) {
+	v := "tippy"
+	var fn func(string)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInFunc(b *testing.B) {
+	v := func() { panic("this should not execute") }
+	var fn func(func())
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkRvBool(b *testing.B) {
+	var fn func() bool
+	pl.Eval(`sub { 1 }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvInt(b *testing.B) {
+	var fn func() int
+	pl.Eval(`sub { 1 }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvUint(b *testing.B) {
+	var fn func() uint
+	pl.Eval(`sub { 1 }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvFloat(b *testing.B) {
+	var fn func() float64
+	pl.Eval(`sub { 1.0 }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvComplex(b *testing.B) {
+	var fn func() complex128
+	pl.Eval(`sub { Math::Complex->new(1.0, 1.0) }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvMap(b *testing.B) {
+	var fn func() map[int]int
+	pl.Eval(`sub { { qw(1 2 3 4) } }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvList(b *testing.B) {
+	var fn func() []int
+	pl.Eval(`sub { [ qw(1 2 3 4) ] }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvString(b *testing.B) {
+	var fn func() string
+	pl.Eval(`sub { 'tippy' }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvFunc(b *testing.B) {
+	var fn func() func()
+	pl.Eval(`sub { sub { die 'not reached' } }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
 	}
 }
