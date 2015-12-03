@@ -147,7 +147,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	case reflect.Array,
 		reflect.Slice:
 		lst := make([]*C.SV, 1+src.Len())
-		for i := 0; i < src.Len(); i++ {
+		for i := range lst[0 : len(lst)-1] {
 			lst[i] = pl.newSVval(src.Index(i))
 		}
 		pl.sync(func() { dst = C.glue_newAV(pl.thx, &lst[0]) })
@@ -311,12 +311,12 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			return
 		}
 	case reflect.Map:
-		dst.Set(reflect.MakeMap(t))
 		cb := func(raw **C.SV, n int) {
-			if raw == nil {
-				return
-			}
 			pl.unsync(func() {
+				dst.Set(reflect.MakeMap(t))
+				if raw == nil {
+					return
+				}
 				var k reflect.Value
 				for i, sv := range sliceOf(raw, int(n)) {
 					if i&1 == 0 {
@@ -342,15 +342,14 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 	case reflect.Slice:
 		cb := func(raw **C.SV, n C.IV) {
 			pl.unsync(func() {
-				tmp := reflect.MakeSlice(t, 0, int(n))
-				if raw != nil {
-					for _, sv := range sliceOf(raw, int(n)) {
-						val := reflect.New(t.Elem()).Elem()
-						pl.valSV(&val, sv)
-						tmp = reflect.Append(tmp, val)
-					}
+				dst.Set(reflect.MakeSlice(t, int(n), int(n)))
+				if raw == nil {
+					return
 				}
-				dst.Set(tmp)
+				for i, sv := range sliceOf(raw, int(n)) {
+					val := dst.Index(i)
+					pl.valSV(&val, sv)
+				}
 			})
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
