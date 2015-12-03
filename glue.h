@@ -3,34 +3,42 @@
 #include "EXTERN.h"
 #include "perl.h"
 
-tTHX glue_init();
+/* go1.5 has trouble with the definitions of PerlIntpreter and SV (see
+ * https://github.com/golang/go/issues/13039 for details), so we are
+ * unable to pass pointers to these types using cgo.  Instead we make
+ * some fake opaque struct pointers and play casting games in each
+ * handler function. */
+typedef struct gPL *gPL;
+typedef struct gSV *gSV;
 
-void glue_fini(pTHX);
+gPL glue_init();
 
-SV *glue_eval(pTHX_ char *, SV **);
-SV *glue_call_sv(pTHX_ SV *, SV **, SV **, IV);
+void glue_fini(gPL);
 
-void glue_inc(pTHX_ SV *);
-void glue_dec(pTHX_ SV *);
-void glue_track(pTHX_ SV *);
+gSV glue_eval(gPL, char *, gSV *);
+gSV glue_call_sv(gPL, gSV, gSV *, gSV *, IV);
 
-IV glue_count_live(pTHX);
+void glue_inc(gPL, gSV);
+void glue_dec(gPL, gSV);
+void glue_track(gPL, gSV);
 
-bool glue_getBool(pTHX_ SV *);
-IV glue_getIV(pTHX_ SV *);
-UV glue_getUV(pTHX_ SV *);
-NV glue_getNV(pTHX_ SV *);
-const char *glue_getPV(pTHX_ SV *, STRLEN *);
+IV glue_count_live(gPL);
 
-void glue_walkAV(pTHX_ SV *, UV);
-void glue_walkHV(pTHX_ SV *, UV);
+bool glue_getBool(gPL, gSV);
+IV glue_getIV(gPL, gSV);
+UV glue_getUV(gPL, gSV);
+NV glue_getNV(gPL, gSV);
+const char *glue_getPV(gPL, gSV, STRLEN *);
 
-SV *glue_newBool(pTHX_ bool);
-SV *glue_newIV(pTHX_ IV);
-SV *glue_newUV(pTHX_ UV);
-SV *glue_newNV(pTHX_ NV);
-SV *glue_newPV(pTHX_ char *, STRLEN);
-SV *glue_newAV(pTHX_ SV **);
-SV *glue_newHV(pTHX_ SV **);
-SV *glue_newCV(pTHX_ UV, IV, IV);
-SV *glue_newRV(pTHX_ SV *);
+void glue_walkAV(gPL, gSV, UV);
+void glue_walkHV(gPL, gSV, UV);
+
+gSV glue_newBool(gPL, bool);
+gSV glue_newIV(gPL, IV);
+gSV glue_newUV(gPL, UV);
+gSV glue_newNV(gPL, NV);
+gSV glue_newPV(gPL, char *, STRLEN);
+gSV glue_newAV(gPL, gSV *);
+gSV glue_newHV(gPL, gSV *);
+gSV glue_newCV(gPL, UV, IV, IV);
+gSV glue_newRV(gPL, gSV);

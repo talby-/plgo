@@ -18,7 +18,7 @@ import (
 
 // PL holds a Perl runtime
 type PL struct {
-	thx        C.tTHX
+	thx        C.gPL
 	cx         chan bool
 	newSVcmplx func(float64, float64) *sV
 	valSVcmplx func(*sV) (float64, float64)
@@ -26,7 +26,7 @@ type PL struct {
 
 type sV struct {
 	pl  *PL
-	sv  *C.SV
+	sv  C.gSV
 	own bool
 }
 
@@ -36,7 +36,7 @@ type sV struct {
 // indirection layer.  The liveCB map will serve this purpose.
 var (
 	liveCBSeq = uint(0)
-	liveCB    = map[uint]func(**C.SV, **C.SV){}
+	liveCB    = map[uint]func(*C.gSV, *C.gSV){}
 )
 
 func plFini(pl *PL) {
@@ -65,8 +65,8 @@ func (pl *PL) unsync(f func()) {
 	<-pl.cx
 }
 
-func sliceOf(raw **C.SV, n int) []*C.SV {
-	return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
+func sliceOf(raw *C.gSV, n int) []C.gSV {
+	return *(*[]C.gSV)(unsafe.Pointer(&reflect.SliceHeader{
 		Data: uintptr(unsafe.Pointer(raw)),
 		Len:  n,
 		Cap:  n,
@@ -78,7 +78,7 @@ func sliceOf(raw **C.SV, n int) []*C.SV {
 // Not all types are supported, but many basic types are, including
 // functions.
 func (pl *PL) Eval(text string, ptrs ...interface{}) error {
-	var err, av *C.SV
+	var err, av C.gSV
 	code := C.CString("[ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
 	pl.sync(func() { av = C.glue_eval(pl.thx, code, &err) })
 
@@ -91,7 +91,7 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 		return e
 	}
 	if len(ptrs) > 0 {
-		cb := func(raw **C.SV, n C.IV) {
+		cb := func(raw *C.gSV, n C.IV) {
 			pl.unsync(func() {
 				lst := sliceOf(raw, int(n))
 				for i, sv := range lst {
@@ -116,7 +116,7 @@ func (pl *PL) Live() int {
 	return int(rv)
 }
 
-func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
+func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
@@ -146,7 +146,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 		return pl.newSVcmplx(real(v), imag(v)).sv
 	case reflect.Array,
 		reflect.Slice:
-		lst := make([]*C.SV, 1+src.Len())
+		lst := make([]C.gSV, 1+src.Len())
 		for i := range lst[0 : len(lst)-1] {
 			lst[i] = pl.newSVval(src.Index(i))
 		}
@@ -156,7 +156,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	case reflect.Func:
 		liveCBSeq++
 		id := C.UV(liveCBSeq)
-		liveCB[liveCBSeq] = func(arg **C.SV, ret **C.SV) {
+		liveCB[liveCBSeq] = func(arg *C.gSV, ret *C.gSV) {
 			pl.unsync(func() {
 				// xlate args - they are already mortal, don't take
 				// ownership unless they need to survive beyond the
@@ -181,7 +181,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
-		lst := make([]*C.SV, 1+2*len(keys))
+		lst := make([]C.gSV, 1+2*len(keys))
 		for i, key := range keys {
 			lst[i<<1] = pl.newSVval(key)
 			lst[i<<1+1] = pl.newSVval(src.MapIndex(key))
@@ -206,7 +206,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst *C.SV) {
 	panic("unhandled type \"" + src.Kind().String() + "\"")
 }
 
-func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
+func (pl *PL) valSV(dst *reflect.Value, src C.gSV) {
 	t := dst.Type()
 	switch t.Kind() {
 	case reflect.Bool:
@@ -249,13 +249,13 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 	case reflect.Func:
 		var cv *sV
 		dst.Set(reflect.MakeFunc(t, func(arg []reflect.Value) (ret []reflect.Value) {
-			args := make([]*C.SV, 1+t.NumIn())
+			args := make([]C.gSV, 1+t.NumIn())
 			for i, val := range arg {
 				args[i] = pl.newSVval(val)
 			}
-			rets := make([]*C.SV, 1+t.NumOut())
+			rets := make([]C.gSV, 1+t.NumOut())
 
-			var err *C.SV
+			var err C.gSV
 			no := C.IV(t.NumOut())
 			pl.sync(func() { err = C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no) })
 
@@ -311,7 +311,7 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			return
 		}
 	case reflect.Map:
-		cb := func(raw **C.SV, n int) {
+		cb := func(raw *C.gSV, n int) {
 			pl.unsync(func() {
 				dst.Set(reflect.MakeMap(t))
 				if raw == nil {
@@ -340,7 +340,7 @@ func (pl *PL) valSV(dst *reflect.Value, src *C.SV) {
 			return
 		}
 	case reflect.Slice:
-		cb := func(raw **C.SV, n C.IV) {
+		cb := func(raw *C.gSV, n C.IV) {
 			pl.unsync(func() {
 				dst.Set(reflect.MakeSlice(t, int(n), int(n)))
 				if raw == nil {
@@ -376,7 +376,7 @@ func svFini(sv *sV) {
 	}
 }
 
-func (pl *PL) sV(sv *C.SV, own bool) *sV {
+func (pl *PL) sV(sv C.gSV, own bool) *sV {
 	var self sV
 	self.pl = pl
 	self.sv = sv
@@ -397,12 +397,12 @@ func (sv *sV) Error() string {
 }
 
 //export goList
-func goList(cb uintptr, lst **C.SV, n C.IV) {
-	(*(*func(**C.SV, C.IV))(unsafe.Pointer(cb)))(lst, n)
+func goList(cb uintptr, lst *C.gSV, n C.IV) {
+	(*(*func(*C.gSV, C.IV))(unsafe.Pointer(cb)))(lst, n)
 }
 
 //export goInvoke
-func goInvoke(data uint, arg **C.SV, ret **C.SV) {
+func goInvoke(data uint, arg *C.gSV, ret *C.gSV) {
 	liveCB[data](arg, ret)
 }
 
