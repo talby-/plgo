@@ -186,7 +186,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 			lst[i<<1] = pl.newSVval(key)
 			lst[i<<1+1] = pl.newSVval(src.MapIndex(key))
 		}
-		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0]) })
+		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0], nil) })
 		return
 	case reflect.Ptr:
 		// TODO: *sV handling is a special case, but generic Ptr support
@@ -201,6 +201,14 @@ func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 		pl.sync(func() { dst = C.glue_newPV(pl.thx, cs, cl) })
 		return
 	case reflect.Struct:
+		lst := make([]C.gSV, 1+2*t.NumField())
+		for i := 0; i < t.NumField(); i++ {
+			lst[i<<1] = pl.newSVval(reflect.ValueOf(t.Field(i).Name))
+			lst[i<<1+1] = pl.newSVval(src.Field(i))
+		}
+		styp := C.CString(t.PkgPath() + "/" + t.Name())
+		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0], styp) })
+		return
 	case reflect.UnsafePointer:
 	}
 	panic("unhandled type \"" + src.Kind().String() + "\"")
@@ -362,6 +370,28 @@ func (pl *PL) valSV(dst *reflect.Value, src C.gSV) {
 		dst.SetString(C.GoStringN(val, C.int(len)))
 		return
 	case reflect.Struct:
+		/* TODO: this should also unwrap proxies */
+		cb := func(raw *C.gSV, n C.IV) {
+			pl.unsync(func() {
+				dst.Set(reflect.New(t).Elem())
+				if raw == nil {
+					return
+				}
+				k := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
+				for i, sv := range sliceOf(raw, int(n)) {
+					if i&1 == 0 {
+						pl.valSV(&k, sv)
+					} else {
+						v := dst.FieldByName(k.String())
+						pl.valSV(&v, sv)
+					}
+				}
+			})
+		}
+		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
+		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
+		return
+
 	case reflect.UnsafePointer:
 	}
 	panic("unhandled type \"" + t.Kind().String() + "\"")

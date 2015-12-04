@@ -18,6 +18,34 @@ static inline SV *asSV(gSV plv) { return (SV *)plv; }
 static inline gSV asgSV(SV *sv) { return (gSV)sv; }
 static inline gSV *asgSVp(SV **psv) { return (gSV *)psv; }
 
+/* A little macro nuttiness to get Perl errors report the correct file
+ * and line. */
+#define STRINGY_FLAT(x) #x
+#define STRINGY(x) STRINGY_FLAT(x)
+static const char *perl_runtime =
+    "#line " STRINGY(__LINE__) " \"" __FILE__ "\" \n\n\
+    use strict; \n\
+    use warnings; \n\
+    package Go { \n\
+        sub type { \n\
+            my($tgt) = @_; \n\
+            $tgt =~ s|/|::|sg; \n\
+            $tgt = qq(Go::$tgt); \n\
+            eval qq( \n\
+                package $tgt; \n\
+                use base 'Go::Pxy'; \n\
+            ) unless UNIVERSAL::isa($tgt, qq(Go::Pxy)); \n\
+            return $tgt; \n\
+        } \n\
+    } \n\
+    package Go::Pxy { \n\
+        # TODO: method dispatch back up to Go \n\
+        sub AUTOLOAD { \n\
+             \n\
+        } \n\
+    } \n\
+";
+
 gPL glue_init() {
     int argc = 3;
     char *argv[] = { "", "-e", "0", NULL };
@@ -27,6 +55,7 @@ gPL glue_init() {
     perl_construct(my_perl);
     perl_parse(my_perl, xs_init, argc, argv, NULL);
     PL_exit_flags |= PERL_EXIT_DESTRUCT_END;
+    eval_pv(perl_runtime, TRUE);
     return (gPL)my_perl;
 }
 
@@ -259,9 +288,27 @@ gSV glue_newAV(gPL pl, gSV *elts) {
     return asgSV(newRV_noinc((SV *)av));
 }
 
-gSV glue_newHV(gPL pl, gSV *elts) {
+static void newObj(pTHX_ SV *rv, char *gotype) {
+    dSP;
+    SV *sv;
+    ENTER;
+    SAVETMPS;
+    PUSHMARK(SP);
+    mXPUSHs(newSVpv(gotype, 0));
+    PUTBACK;
+    call_pv("Go::type", G_EVAL | G_SCALAR);
+    SPAGAIN;
+    sv = POPs;
+    sv_bless(rv, gv_stashsv(sv, GV_ADD));
+    PUTBACK;
+    FREETMPS;
+    LEAVE;
+}
+
+gSV glue_newHV(gPL pl, gSV *elts, char *gotype) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
+    SV *rv;
     HV *hv = newHV();
     while(*elts) {
         SV *k = asSV(*elts++);
@@ -270,7 +317,12 @@ gSV glue_newHV(gPL pl, gSV *elts) {
         SvREFCNT_dec(k);
         // hv_store_ent has taken ownership of v
     }
-    return asgSV(newRV_noinc((SV *)hv));
+    rv = newRV_noinc((SV *)hv);
+    if(gotype) {
+        newObj(aTHX_ rv, gotype);
+        free(gotype);
+    }
+    return asgSV(rv);
 }
 
 gSV glue_newRV(gPL pl, gSV sv) {

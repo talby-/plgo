@@ -39,6 +39,6 @@ gSV glue_newUV(gPL, UV);
 gSV glue_newNV(gPL, NV);
 gSV glue_newPV(gPL, char *, STRLEN);
 gSV glue_newAV(gPL, gSV *);
-gSV glue_newHV(gPL, gSV *);
+gSV glue_newHV(gPL, gSV *, char *);
 gSV glue_newCV(gPL, UV, IV, IV);
 gSV glue_newRV(gPL, gSV);

@@ -9,6 +9,14 @@ import (
 	"testing"
 )
 
+type AList []int
+type AMap map[int]int
+type AStruct struct {
+	I int
+	F float64
+}
+type AFunc func(int) int
+
 var pl = plgo.New()
 
 func ExamplePL_Eval() {
@@ -83,17 +91,17 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { v = ofn() }
-	case map[int]int:
-		var v map[int]int
-		var ifn func(map[int]int)
-		var ofn func() map[int]int
+	case AMap:
+		var v AMap
+		var ifn func(AMap)
+		var ofn func() AMap
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { v = ofn() }
-	case []int:
-		var v []int
-		var ifn func([]int)
-		var ofn func() []int
+	case AList:
+		var v AList
+		var ifn func(AList)
+		var ofn func() AList
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { v = ofn() }
@@ -104,10 +112,17 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { v = ofn() }
-	case func():
-		var v func()
-		var ifn func(func())
-		var ofn func() func()
+	case AFunc:
+		var v AFunc
+		var ifn func(AFunc)
+		var ofn func() AFunc
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { v = ofn() }
+	case AStruct:
+		var v AStruct
+		var ifn func(AStruct)
+		var ofn func() AStruct
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { v = ofn() }
@@ -479,9 +494,9 @@ func TestComplex128(t *testing.T) {
 }
 
 func TestFunc(t *testing.T) {
-	var id func(func(int) int) func(int) int
+	var id func(AFunc) AFunc
 	pl.Eval(`sub { $_[0] }`, &id)
-	ok := func(want func(int) int) {
+	ok := func(want AFunc) {
 		have := id(want)
 		if have(18) != want(18) {
 			t.Errorf("id(%v func() int) => %v", want, have)
@@ -496,17 +511,17 @@ func TestFunc(t *testing.T) {
 }
 
 func TestMap(t *testing.T) {
-	var id func(map[int]int) map[int]int
+	var id func(AMap) AMap
 	pl.Eval(`sub { $_[0] }`, &id)
-	ok := func(want map[int]int) {
+	ok := func(want AMap) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
 			t.Errorf("id(%v map[int]int) => %v", want, have)
 		}
 	}
-	ok(map[int]int{66: 12, 88: 8})
+	ok(AMap{66: 12, 88: 8})
 
-	leak(t, 1024, map[int]int{37: 17}, `{ 38 => 18 }`)
+	leak(t, 1024, AMap{37: 17}, `{ 38 => 18 }`)
 }
 
 /*
@@ -533,19 +548,19 @@ func TestSV(t *testing.T) {
 }
 */
 
-func TestSlice(t *testing.T) {
-	var id func([]int) []int
+func TestList(t *testing.T) {
+	var id func(AList) AList
 	pl.Eval(`sub { $_[0] }`, &id)
-	ok := func(want []int) {
+	ok := func(want AList) {
 		have := id(want)
 		if !reflect.DeepEqual(have, want) {
 			t.Errorf("id(%v []int) => %v", want, have)
 		}
 	}
-	ok([]int{})
-	ok([]int{1, 2, 3})
+	ok(AList{})
+	ok(AList{1, 2, 3})
 
-	leak(t, 1024, []int{17, 18}, `[ 19, 20 ]`)
+	leak(t, 1024, AList{17, 18}, `[ 19, 20 ]`)
 }
 
 func TestString(t *testing.T) {
@@ -561,6 +576,22 @@ func TestString(t *testing.T) {
 	ok("a string")
 
 	leak(t, 1024, "uuu", `"vvv"`)
+}
+
+func TestStruct(t *testing.T) {
+	// struct passing is not yet symmetric
+	var id func(AStruct) AStruct
+	pl.Eval(`sub { $_[0] }`, &id)
+	ok := func(want AStruct) {
+		have := id(want)
+		if !reflect.DeepEqual(have, want) {
+			t.Errorf("id(%v string) => %v", want, have)
+		}
+	}
+	ok(AStruct{I: 0, F: 0.0})
+	ok(AStruct{I: 2, F: 3.4})
+
+	leak(t, 1024, AStruct{I: 2, F: 3.4}, `{ I => 5, F => 6.8 }`)
 }
 
 func TestMulti(t *testing.T) {
@@ -659,8 +690,8 @@ func BenchmarkInComplex(b *testing.B) {
 }
 
 func BenchmarkInMap(b *testing.B) {
-	v := map[int]int{1: 2, 3: 4}
-	var fn func(map[int]int)
+	v := AMap{1: 2, 3: 4}
+	var fn func(AMap)
 	pl.Eval(`sub {}`, &fn)
 	fn(v)
 	b.ResetTimer()
@@ -670,8 +701,8 @@ func BenchmarkInMap(b *testing.B) {
 }
 
 func BenchmarkInList(b *testing.B) {
-	v := []int{1, 2, 3, 4}
-	var fn func([]int)
+	v := AList{1, 2, 3, 4}
+	var fn func(AList)
 	pl.Eval(`sub {}`, &fn)
 	fn(v)
 	b.ResetTimer()
@@ -692,8 +723,22 @@ func BenchmarkInString(b *testing.B) {
 }
 
 func BenchmarkInFunc(b *testing.B) {
-	v := func() { panic("this should not execute") }
-	var fn func(func())
+	v := func(int) int {
+		panic("this should not execute")
+		return 0
+	}
+	var fn func(AFunc)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
+func BenchmarkInStruct(b *testing.B) {
+	v := AStruct{I: 2, F: 4.8}
+	var fn func(AStruct)
 	pl.Eval(`sub {}`, &fn)
 	fn(v)
 	b.ResetTimer()
@@ -753,7 +798,7 @@ func BenchmarkRvComplex(b *testing.B) {
 }
 
 func BenchmarkRvMap(b *testing.B) {
-	var fn func() map[int]int
+	var fn func() AMap
 	pl.Eval(`sub { { qw(1 2 3 4) } }`, &fn)
 	fn()
 	b.ResetTimer()
@@ -763,7 +808,7 @@ func BenchmarkRvMap(b *testing.B) {
 }
 
 func BenchmarkRvList(b *testing.B) {
-	var fn func() []int
+	var fn func() AList
 	pl.Eval(`sub { [ qw(1 2 3 4) ] }`, &fn)
 	fn()
 	b.ResetTimer()
@@ -783,8 +828,18 @@ func BenchmarkRvString(b *testing.B) {
 }
 
 func BenchmarkRvFunc(b *testing.B) {
-	var fn func() func()
+	var fn func() AFunc
 	pl.Eval(`sub { sub { die 'not reached' } }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvStruct(b *testing.B) {
+	var fn func() AStruct
+	pl.Eval(`sub { { I => 2, F => 4.8 } }`, &fn)
 	fn()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
