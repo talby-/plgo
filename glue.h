@@ -23,6 +23,7 @@ void glue_dec(gPL, gSV);
 void glue_track(gPL, gSV);
 
 IV glue_count_live(gPL);
+gSV *glue_alloc(IV);
 
 bool glue_getBool(gPL, gSV);
 IV glue_getIV(gPL, gSV);
@@ -39,6 +40,7 @@ gSV glue_newUV(gPL, UV);
 gSV glue_newNV(gPL, NV);
 gSV glue_newPV(gPL, char *, STRLEN);
 gSV glue_newAV(gPL, gSV *);
-gSV glue_newHV(gPL, gSV *, char *);
-gSV glue_newCV(gPL, UV, IV, IV);
+gSV glue_newHV(gPL, gSV *);
+gSV glue_newCV(gPL, UV);
 gSV glue_newRV(gPL, gSV);
+gSV glue_newObj(gPL, UV, char *, char **);

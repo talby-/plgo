@@ -17,6 +17,10 @@ type AStruct struct {
 }
 type AFunc func(int) int
 
+func (ast AStruct) AMethod(n int) int {
+	return ast.I + n
+}
+
 var pl = plgo.New()
 
 func ExamplePL_Eval() {
@@ -590,6 +594,13 @@ func TestStruct(t *testing.T) {
 	}
 	ok(AStruct{I: 0, F: 0.0})
 	ok(AStruct{I: 2, F: 3.4})
+
+	var fn func(AStruct) int
+	pl.Eval(`sub { $_[0]->AMethod(5); }`, &fn)
+	v := fn(AStruct{I: 4, F: 5.6})
+	if v != 9 {
+		t.Errorf("AStruct{I: 4, F: 5.6}.AMethod(5) => %v", v)
+	}
 
 	leak(t, 1024, AStruct{I: 2, F: 3.4}, `{ I => 5, F => 6.8 }`)
 }

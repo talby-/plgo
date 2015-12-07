@@ -30,13 +30,22 @@ type sV struct {
 	own bool
 }
 
+type liveSTEnt struct {
+	live int
+	getf func(*C.char) C.gSV
+	setf func(*C.char, C.gSV)
+	call func(*C.char, *C.gSV) *C.gSV
+}
+
 // We can not reliably hold pointers to Go objects in C
 // https://github.com/golang/go/issues/12416 documents the rules.
 // runtime.GC() can move objects in memory so we have to create an
-// indirection layer.  The liveCB map will serve this purpose.
+// indirection layer.  The live maps will serve this purpose.
 var (
 	liveCBSeq = uint(0)
-	liveCB    = map[uint]func(*C.gSV, *C.gSV){}
+	liveCB    = map[uint]func(*C.gSV) *C.gSV{}
+	liveSTSeq = uint(0)
+	liveST    = map[uint]*liveSTEnt{}
 )
 
 func plFini(pl *PL) {
@@ -156,7 +165,7 @@ func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 	case reflect.Func:
 		liveCBSeq++
 		id := C.UV(liveCBSeq)
-		liveCB[liveCBSeq] = func(arg *C.gSV, ret *C.gSV) {
+		liveCB[liveCBSeq] = func(arg *C.gSV) (ret *C.gSV) {
 			pl.unsync(func() {
 				// xlate args - they are already mortal, don't take
 				// ownership unless they need to survive beyond the
@@ -168,25 +177,25 @@ func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 				}
 				// xlate rets - return as owning references and
 				// glue_invoke() will mortalize them for us
+				ret = C.glue_alloc(C.IV(1 + t.NumOut()))
 				rets := sliceOf(ret, t.NumOut())
 				for i, val := range src.Call(args) {
 					rets[i] = pl.newSVval(val)
 				}
 			})
+			return
 		}
-		ni := C.IV(t.NumIn())
-		no := C.IV(t.NumOut())
-		pl.sync(func() { dst = C.glue_newCV(pl.thx, id, ni, no) })
+		pl.sync(func() { dst = C.glue_newCV(pl.thx, id) })
 		return
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
-		lst := make([]C.gSV, 1+2*len(keys))
+		lst := make([]C.gSV, len(keys)<<1+1)
 		for i, key := range keys {
 			lst[i<<1] = pl.newSVval(key)
 			lst[i<<1+1] = pl.newSVval(src.MapIndex(key))
 		}
-		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0], nil) })
+		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0]) })
 		return
 	case reflect.Ptr:
 		// TODO: *sV handling is a special case, but generic Ptr support
@@ -201,13 +210,46 @@ func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
 		pl.sync(func() { dst = C.glue_newPV(pl.thx, cs, cl) })
 		return
 	case reflect.Struct:
-		lst := make([]C.gSV, 1+2*t.NumField())
-		for i := 0; i < t.NumField(); i++ {
-			lst[i<<1] = pl.newSVval(reflect.ValueOf(t.Field(i).Name))
-			lst[i<<1+1] = pl.newSVval(src.Field(i))
+		ent := new(liveSTEnt)
+		liveSTSeq++
+		liveST[liveSTSeq] = ent
+		id := C.UV(liveSTSeq)
+		ty := C.CString(t.PkgPath() + "/" + t.Name())
+		al := make([]*C.char, 1+t.NumField())
+		ent.getf = func(name *C.char) (rv C.gSV) {
+			pl.unsync(func() {
+				rv = pl.newSVval(src.FieldByName(C.GoString(name)))
+			})
+			return
 		}
-		styp := C.CString(t.PkgPath() + "/" + t.Name())
-		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0], styp) })
+		ent.setf = func(name *C.char, sv C.gSV) {
+			pl.unsync(func() {
+				val := src.FieldByName(C.GoString(name))
+				pl.valSV(&val, sv)
+			})
+		}
+		ent.call = func(name *C.char, arg *C.gSV) (ret *C.gSV) {
+			pl.unsync(func() {
+				m := src.MethodByName(C.GoString(name))
+				mt := m.Type()
+				args := make([]reflect.Value, mt.NumIn())
+				for i, sv := range sliceOf(arg, len(args)) {
+					args[i] = reflect.New(mt.In(i)).Elem()
+					pl.valSV(&args[i], sv)
+				}
+				ret = C.glue_alloc(C.IV(1 + mt.NumOut()))
+				rets := sliceOf(ret, 1+mt.NumOut())
+				for i, val := range m.Call(args) {
+					rets[i] = pl.newSVval(val)
+				}
+			})
+			return
+		}
+		ent.live = len(al) /* held by the wrap + each field stub */
+		for i := range al[0 : len(al)-1] {
+			al[i] = C.CString(t.Field(i).Name)
+		}
+		pl.sync(func() { dst = C.glue_newObj(pl.thx, id, ty, &al[0]) })
 		return
 	case reflect.UnsafePointer:
 	}
@@ -432,11 +474,35 @@ func goList(cb uintptr, lst *C.gSV, n C.IV) {
 }
 
 //export goInvoke
-func goInvoke(data uint, arg *C.gSV, ret *C.gSV) {
-	liveCB[data](arg, ret)
+func goInvoke(data uint, arg *C.gSV) *C.gSV {
+	return liveCB[data](arg)
 }
 
-//export goRelease
-func goRelease(data uint) {
+//export goReleaseCB
+func goReleaseCB(data uint) {
 	delete(liveCB, data)
+}
+
+//export goSTGetf
+func goSTGetf(id uint, name *C.char) C.gSV {
+	return liveST[id].getf(name)
+}
+
+//export goSTSetf
+func goSTSetf(id uint, name *C.char, sv C.gSV) {
+	liveST[id].setf(name, sv)
+}
+
+//export goSTCall
+func goSTCall(id uint, name *C.char, arg *C.gSV) *C.gSV {
+	return liveST[id].call(name, arg)
+}
+
+//export goReleaseST
+func goReleaseST(id uint) {
+	liveST[id].live--
+	if liveST[id].live > 0 {
+		return
+	}
+	delete(liveST, id)
 }
