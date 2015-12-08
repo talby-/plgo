@@ -20,10 +20,10 @@ gSV glue_call_sv(gPL, gSV, gSV *, gSV *, IV);
 
 void glue_inc(gPL, gSV);
 void glue_dec(gPL, gSV);
-void glue_track(gPL, gSV);
 
 IV glue_count_live(gPL);
 gSV *glue_alloc(IV);
+void glue_dump(gPL, gSV);
 
 bool glue_getBool(gPL, gSV);
 IV glue_getIV(gPL, gSV);

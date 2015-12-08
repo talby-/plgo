@@ -10,7 +10,6 @@ package plgo
 */
 import "C"
 import (
-	"fmt"
 	"reflect"
 	"runtime"
 	"unsafe"
@@ -425,7 +424,9 @@ func (pl *PL) valSV(dst *reflect.Value, src C.gSV) {
 						pl.valSV(&k, sv)
 					} else {
 						v := dst.FieldByName(k.String())
-						pl.valSV(&v, sv)
+						if v.IsValid() {
+							pl.valSV(&v, sv)
+						}
 					}
 				}
 			})
@@ -441,9 +442,6 @@ func (pl *PL) valSV(dst *reflect.Value, src C.gSV) {
 
 func svFini(sv *sV) {
 	if sv.own {
-		if false {
-			fmt.Printf("RELEASE %p\n", sv.sv)
-		}
 		sv.pl.sync(func() { C.glue_dec(sv.pl.thx, sv.sv) })
 	}
 }
@@ -455,10 +453,6 @@ func (pl *PL) sV(sv C.gSV, own bool) *sV {
 	self.own = own
 	pl.sync(func() { C.glue_inc(pl.thx, sv) })
 	runtime.SetFinalizer(&self, svFini)
-	if self.own && false {
-		pl.sync(func() { C.glue_track(pl.thx, sv) })
-		fmt.Printf("ACQUIRE %p\n", self.sv)
-	}
 	return &self
 }
 

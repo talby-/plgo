@@ -214,22 +214,6 @@ void glue_dec(gPL pl, gSV sv) {
     SvREFCNT_dec(asSV(sv));
 }
 
-static int vtbl_dbg_sv_free(pTHX_ SV *sv, MAGIC *mg) {
-    PERL_SET_CONTEXT(my_perl);
-    char buf[128];
-    int l = write(STDERR_FILENO, buf, sprintf(buf, "SVFREE  %p\n", sv));
-
-    (void) l;
-    return 0;
-}
-
-static MGVTBL vtbl_dbg = { 0, 0, 0, 0, vtbl_dbg_sv_free };
-void glue_track(gPL pl, gSV sv) {
-    dTHXa(pl);
-    PERL_SET_CONTEXT(my_perl);
-    sv_magicext(asSV(sv), 0, PERL_MAGIC_ext, &vtbl_dbg, (char *)0xc0ffee, 0);
-}
-
 IV glue_count_live(gPL pl) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
@@ -248,6 +232,12 @@ IV glue_count_live(gPL pl) {
 
 gSV *glue_alloc(IV n) {
     return (gSV *)calloc(n, sizeof(SV *));
+}
+
+void glue_dump(gPL pl, gSV sv) {
+    dTHXa(pl);
+    PERL_SET_CONTEXT(my_perl);
+    sv_dump(asSV(sv));
 }
 
 bool glue_getBool(gPL pl, gSV sv) {
@@ -300,8 +290,8 @@ void glue_walkAV(gPL pl, gSV sv, UV data) {
 
 void glue_walkHV(gPL pl, gSV sv, UV data) {
     dTHXa(pl);
-    SV **lst = NULL;
     IV len = 0;
+    SV **lst = NULL;
 
     PERL_SET_CONTEXT(my_perl);
     SAVETMPS;
@@ -309,15 +299,14 @@ void glue_walkHV(gPL pl, gSV sv, UV data) {
         HV *hv = (HV *)SvRV(asSV(sv));
         if(SvTYPE((SV *)hv) == SVt_PVHV) {
             HE *he;
-            SV **p;
-            lst = alloca(HvKEYS(hv) << 1);
-            p = lst;
+            IV i = 0;
+            len = HvKEYS(hv) << 1;
+            lst = alloca(len * sizeof(SV *));
             hv_iterinit(hv);
             while((he = hv_iternext(hv))) {
-                *p++ = HeSVKEY_force(he);
-                *p++ = HeVAL(he);
+                lst[i++] = HeSVKEY_force(he);
+                lst[i++] = HeVAL(he);
             }
-            len = p - lst;
         }
     }
     goList(data, asgSVp(lst), len);
