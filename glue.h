@@ -25,22 +25,21 @@ IV glue_count_live(gPL);
 gSV *glue_alloc(IV);
 void glue_dump(gPL, gSV);
 
-bool glue_getBool(gPL, gSV);
-IV glue_getIV(gPL, gSV);
-UV glue_getUV(gPL, gSV);
-NV glue_getNV(gPL, gSV);
-const char *glue_getPV(gPL, gSV, STRLEN *);
+void glue_getBool(gPL, bool *, gSV);
+void glue_getIV(gPL, IV *, gSV);
+void glue_getUV(gPL, UV *, gSV);
+void glue_getNV(gPL, NV *, gSV);
+void glue_getPV(gPL, char **, STRLEN *, gSV);
 
 void glue_walkAV(gPL, gSV, UV);
 void glue_walkHV(gPL, gSV, UV);
 
-gSV glue_newBool(gPL, bool);
-gSV glue_newIV(gPL, IV);
-gSV glue_newUV(gPL, UV);
-gSV glue_newNV(gPL, NV);
-gSV glue_newPV(gPL, char *, STRLEN);
-gSV glue_newAV(gPL, gSV *);
-gSV glue_newHV(gPL, gSV *);
-gSV glue_newCV(gPL, UV);
-gSV glue_newRV(gPL, gSV);
-gSV glue_newObj(gPL, UV, char *, char **);
+void glue_setBool(gPL, gSV *, bool);
+void glue_setIV(gPL, gSV *, IV);
+void glue_setUV(gPL, gSV *, UV);
+void glue_setNV(gPL, gSV *, NV);
+void glue_setPV(gPL, gSV *, char *, STRLEN);
+void glue_setAV(gPL, gSV *, gSV *);
+void glue_setHV(gPL, gSV *, gSV *);
+void glue_setCV(gPL, gSV *, UV);
+void glue_setObj(gPL, gSV *, UV, char *, char **);

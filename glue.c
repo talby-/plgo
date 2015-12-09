@@ -161,10 +161,10 @@ gSV glue_eval(gPL pl, char *text, gSV *errp) {
 gSV glue_call_sv(gPL pl, gSV sv, gSV *arg, gSV *ret, IV n) {
     dTHXa(pl);
     I32 ax;
-    int count;
+    I32 count;
+    dSP;
     int flags;
     SV *err;
-    dSP;
 
     PERL_SET_CONTEXT(my_perl);
     switch(n) {
@@ -210,6 +210,8 @@ void glue_inc(gPL pl, gSV sv) {
 
 void glue_dec(gPL pl, gSV sv) {
     dTHXa(pl);
+    if(sv == NULL)
+        return;
     PERL_SET_CONTEXT(my_perl);
     SvREFCNT_dec(asSV(sv));
 }
@@ -240,40 +242,40 @@ void glue_dump(gPL pl, gSV sv) {
     sv_dump(asSV(sv));
 }
 
-bool glue_getBool(gPL pl, gSV sv) {
+void glue_getBool(gPL pl, bool *dst, gSV sv) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return SvTRUE(asSV(sv));
+    *dst = SvTRUE(asSV(sv));
 }
 
-IV glue_getIV(gPL pl, gSV sv) {
+void glue_getIV(gPL pl, IV *dst, gSV sv) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return SvIV(asSV(sv));
+    *dst = SvIV(asSV(sv));
 }
 
-UV glue_getUV(gPL pl, gSV sv) {
+void glue_getUV(gPL pl, UV *dst, gSV sv) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return SvUV(asSV(sv));
+    *dst = SvUV(asSV(sv));
 }
 
-NV glue_getNV(gPL pl, gSV sv) {
+void glue_getNV(gPL pl, NV *dst, gSV sv) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return SvNV(asSV(sv));
+    *dst = SvNV(asSV(sv));
 }
 
-const char *glue_getPV(gPL pl, gSV sv, STRLEN *len) {
+void glue_getPV(gPL pl, char **dst, STRLEN *len, gSV sv) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return SvPV(asSV(sv), *len);
+    *dst = SvPV(asSV(sv), *len);
 }
 
 void glue_walkAV(gPL pl, gSV sv, UV data) {
     dTHXa(pl);
     SV **lst = NULL;
-    I32 len = 0;
+    I32 len = -1;
 
     PERL_SET_CONTEXT(my_perl);
     SAVETMPS;
@@ -290,7 +292,7 @@ void glue_walkAV(gPL pl, gSV sv, UV data) {
 
 void glue_walkHV(gPL pl, gSV sv, UV data) {
     dTHXa(pl);
-    IV len = 0;
+    IV len = -1;
     SV **lst = NULL;
 
     PERL_SET_CONTEXT(my_perl);
@@ -313,65 +315,71 @@ void glue_walkHV(gPL pl, gSV sv, UV data) {
     FREETMPS;
 }
 
-gSV glue_newBool(gPL pl, bool v) {
+void glue_setBool(gPL pl, gSV *ptr, bool v) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return asgSV(boolSV(v));
+
+    if(!*ptr) *ptr = asgSV(newSV(0));
+    SvSetSV(asSV(*ptr), boolSV(v));
 }
 
-gSV glue_newIV(gPL pl, IV v) {
+void glue_setIV(gPL pl, gSV *ptr, IV v) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return asgSV(newSViv(v));
+
+    if(!*ptr) *ptr = asgSV(newSV(0));
+    sv_setiv(asSV(*ptr), v);
 }
 
-gSV glue_newUV(gPL pl, UV v) {
+void glue_setUV(gPL pl, gSV *ptr, UV v) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return asgSV(newSVuv(v));
+    if(!*ptr) *ptr = asgSV(newSV(0));
+    sv_setuv(asSV(*ptr), v);
 }
 
-gSV glue_newNV(gPL pl, NV v) {
+void glue_setNV(gPL pl, gSV *ptr, NV v) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    return asgSV(newSVnv(v));
+    if(!*ptr) *ptr = asgSV(newSV(0));
+    sv_setnv(asSV(*ptr), v);
 }
 
-gSV glue_newPV(gPL pl, char *str, STRLEN len) {
+void glue_setPV(gPL pl, gSV *ptr, char *str, STRLEN len) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
-    SV *rv = newSVpvn(str, len);
+    if(!*ptr) *ptr = asgSV(newSV(len));
+    sv_setpvn(asSV(*ptr), str, len);
     free(str);
-    return asgSV(rv);
 }
 
-gSV glue_newAV(gPL pl, gSV *elts) {
+static inline void setRV(pTHX_ SV **ptr, SV *elt) {
+    if(!*ptr) *ptr = newSV_type(SVt_IV);
+    SvRV_set(*ptr, elt);
+    SvROK_on(*ptr);
+}
+
+void glue_setAV(gPL pl, gSV *ptr, gSV *lst) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
     AV *av = newAV();
-    while(*elts)
-        av_push(av, asSV(*elts++));
-    return asgSV(newRV_noinc((SV *)av));
+    while(*lst)
+        av_push(av, asSV(*lst++));
+    setRV(aTHX_ (SV **)ptr, (SV *)av);
 }
 
-gSV glue_newHV(gPL pl, gSV *elts) {
+void glue_setHV(gPL pl, gSV *ptr, gSV *lst) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
     HV *hv = newHV();
-    while(*elts) {
-        SV *k = asSV(*elts++);
-        SV *v = asSV(*elts++);
+    while(*lst) {
+        SV *k = asSV(*lst++);
+        SV *v = asSV(*lst++);
         hv_store_ent(hv, k, v, 0);
         SvREFCNT_dec(k);
         // hv_store_ent has taken ownership of v
     }
-    return asgSV(newRV_noinc((SV *)hv));
-}
-
-gSV glue_newRV(gPL pl, gSV sv) {
-    dTHXa(pl);
-    PERL_SET_CONTEXT(my_perl);
-    return asgSV(newRV_inc(asSV(sv)));
+    setRV(aTHX_ (SV **)ptr, (SV *)hv);
 }
 
 /* When Perl releases our CV we should notify Go */
@@ -409,15 +417,15 @@ XS(glue_invoke)
 }
 
 /* Tie a CV to glue_invoke() and stash the Go details */
-gSV glue_newCV(gPL pl, UV id) {
+void glue_setCV(gPL pl, gSV *ptr, UV id) {
     dTHXa(pl);
     PERL_SET_CONTEXT(my_perl);
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
     sv_magicext((SV *)cv, 0, PERL_MAGIC_ext, &vtbl_cb, (char *)id, 0);
-    return asgSV(newRV_noinc((SV *)cv));
+    setRV(aTHX_ (SV **)ptr, (SV *)cv);
 }
 
-gSV glue_newObj(gPL pl, UV id, char *gotype, char **attrs) {
+void glue_setObj(gPL pl, gSV *ptr, UV id, char *gotype, char **attrs) {
     /* this is going to be kind of long... */
     dTHXa(pl);
     //dSP;
@@ -428,7 +436,9 @@ gSV glue_newObj(gPL pl, UV id, char *gotype, char **attrs) {
 
     SAVETMPS;
     hv = newHV();
-    sv = newRV_noinc((SV *)hv);
+    setRV(aTHX_ (SV **)ptr, (SV *)hv);
+    sv = asSV(*ptr);
+
 
     //ENTER;
     //PUSHMARK(SP);
@@ -460,5 +470,4 @@ gSV glue_newObj(gPL pl, UV id, char *gotype, char **attrs) {
     /* slots in the hv are filled, now lock it */
     SvREADONLY_on((SV *)hv);
     FREETMPS;
-    return asgSV(sv);
 }

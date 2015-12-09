@@ -26,6 +26,7 @@ var pl = plgo.New()
 func ExamplePL_Eval() {
 	// get a Perl interpreter
 	p := plgo.New()
+	p.Preamble = `use strict; use warnings;`
 
 	// load Perl's SHA package
 	p.Eval(`use Digest::SHA`)
@@ -151,35 +152,77 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 }
 
 func TestEval(t *testing.T) {
-	err := pl.Eval(`1`)
+	var err error
+	pl.Eval(`1`, &err)
 	if err != nil {
 		t.Errorf("perl error unexpected: %s", err.Error())
 	}
 }
 
+func errOf(f func()) (err error) {
+	func() {
+		defer func() {
+			r := recover()
+			if r != nil {
+				err = r.(error)
+			}
+		}()
+		f()
+	}()
+	return
+}
+
 func TestErr(t *testing.T) {
-	err := pl.Eval(`1 = 2`)
+	var err error
+
+	// when an error in the eval happens, we'll look for an error
+	// pointer to fill with what happened.
+	pl.Eval(`1 = 2`, &err)
 	if err == nil {
 		t.Errorf("pl.Eval() error expected")
 	}
+
+	// but even if an error pointer is provided, we can't always
+	// populate it, particularly if the arg list is malformed.
+	if errOf(func() {
+		var j int
+		pl.Eval(`12`, j, &err)
+	}) == nil {
+		t.Errorf("pl.Eval() error expected")
+	}
+
+	// similarly with bind, function bindings can return an error to
+	// avoid issuing panics.
 	var f func() error
-	pl.Eval(`sub { die "tippy\n" }`, &f)
+	pl.Eval(`sub { die "tippy out\n" }`, &f)
 	err = f()
-	if err == nil || err.Error() != "tippy\n" {
+	if err == nil || err.Error() != "tippy out\n" {
 		t.Errorf("perl error expected")
 	}
 
+	// if they do not and we hit a perl exception, then we'll panic.
 	var g func() int
-	pl.Eval(`sub { die "tippy\n" }`, &g)
-
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Errorf("perl panic expected\n")
-			}
-		}()
+	pl.Eval(`sub { die "tippy up\n" }`, &g)
+	if errOf(func() {
 		g()
-	}()
+	}) == nil {
+		t.Errorf("perl panic expected\n")
+	}
+
+	// some impossible type conversions
+	var h1 func() (map[int]int, error)
+	pl.Eval(`sub { return 2 }`, &h1)
+	if _, err := h1(); err == nil {
+		t.Errorf("int to []int should fail\n")
+	}
+
+	var h2 func() []int
+	pl.Eval(`sub { return 3 }`, &h2)
+	if nil == errOf(func() {
+		h2()
+	}) {
+		t.Errorf("int to map[int]int should fail\n")
+	}
 }
 
 func TestBool(t *testing.T) {
@@ -810,7 +853,7 @@ func BenchmarkRvComplex(b *testing.B) {
 
 func BenchmarkRvMap(b *testing.B) {
 	var fn func() AMap
-	pl.Eval(`sub { { qw(1 2 3 4) } }`, &fn)
+	pl.Eval(`sub { my %m = qw(1 2 3 4); \%m }`, &fn)
 	fn()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -10,6 +10,7 @@ package plgo
 */
 import "C"
 import (
+	"fmt"
 	"reflect"
 	"runtime"
 	"unsafe"
@@ -19,6 +20,7 @@ import (
 type PL struct {
 	thx        C.gPL
 	cx         chan bool
+	Preamble   string // prepended to any plgo.Eval() call
 	newSVcmplx func(float64, float64) *sV
 	valSVcmplx func(*sV) (float64, float64)
 }
@@ -28,6 +30,8 @@ type sV struct {
 	sv  C.gSV
 	own bool
 }
+
+type errFunc func(error) bool
 
 type liveSTEnt struct {
 	live int
@@ -48,7 +52,9 @@ var (
 )
 
 func plFini(pl *PL) {
-	pl.sync(func() { C.glue_fini(pl.thx) })
+	<-pl.cx
+	C.glue_fini(pl.thx)
+	pl.cx <- true
 }
 
 // New initializes a Perl runtime
@@ -61,18 +67,6 @@ func New() *PL {
 	return pl
 }
 
-func (pl *PL) sync(f func()) {
-	<-pl.cx
-	f()
-	pl.cx <- true
-}
-
-func (pl *PL) unsync(f func()) {
-	pl.cx <- true
-	f()
-	<-pl.cx
-}
-
 func sliceOf(raw *C.gSV, n int) []C.gSV {
 	return *(*[]C.gSV)(unsafe.Pointer(&reflect.SliceHeader{
 		Data: uintptr(unsafe.Pointer(raw)),
@@ -81,38 +75,101 @@ func sliceOf(raw *C.gSV, n int) []C.gSV {
 	}))
 }
 
+/* error handling though this code is a bit unconventional.  The API
+ * style we're providing lets the caller decide if we should populate an
+ * error object return value, or panic().  We have a helper function to
+ * support that convention, but it's still an awkward constraint. */
+var noop_error = fmt.Errorf("noop error")
+
+func splitErrs(rets []reflect.Value) (outs []reflect.Value, ef errFunc) {
+	et := reflect.TypeOf((*error)(nil)).Elem()
+	errs := make([]reflect.Value, 0)
+	outs = make([]reflect.Value, 0)
+	for _, v := range rets {
+		if v.Type() == et {
+			errs = append(errs, v)
+		} else {
+			outs = append(outs, v)
+		}
+	}
+	if len(errs) == 0 {
+		ef = func(_ error) bool { return false }
+	} else {
+		ef = func(ifc error) bool {
+			err := ifc.(error)
+			// this is silly, the noop_error can be sent to this
+			// function to detect if error handling is present or if the
+			// caller should instead call panic.  This funciton can't
+			// just call panic for the caller because that would report
+			// the error as happening here. :(
+			if err != noop_error {
+				val := reflect.ValueOf(err)
+				for _, v := range errs {
+					v.Set(val)
+				}
+			}
+			return true
+		}
+	}
+	return
+}
+
 // Eval will execute a string of Perl code.  If ptrs are provided,
 // the list of results from Perl will be stored in the list of ptrs.
 // Not all types are supported, but many basic types are, including
 // functions.
-func (pl *PL) Eval(text string, ptrs ...interface{}) error {
-	var err, av C.gSV
-	code := C.CString("[ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
-	pl.sync(func() { av = C.glue_eval(pl.thx, code, &err) })
+func (pl *PL) Eval(text string, ptrs ...interface{}) {
+	var av C.gSV
 
-	if err != nil {
-		e := pl.sV(err, true)
-		pl.sync(func() {
-			C.glue_dec(pl.thx, av)
-			C.glue_dec(pl.thx, err)
-		})
-		return e
+	// convert ptrs to Values
+	rets := make([]reflect.Value, len(ptrs))
+	for i, p := range ptrs {
+		ptr := reflect.ValueOf(p)
+		if ptr.Kind() == reflect.Ptr {
+			rets[i] = ptr.Elem()
+			rets[i].Set(reflect.Zero(rets[i].Type()))
+		} else {
+			panic(fmt.Errorf("argument %d must be a pointer", 1+i))
+		}
 	}
-	if len(ptrs) > 0 {
+	rets, errf := splitErrs(rets)
+
+	// run eval()
+	code := C.CString(pl.Preamble + "; [ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
+	var errsv C.gSV
+	<-pl.cx
+	av = C.glue_eval(pl.thx, code, &errsv)
+	pl.cx <- true
+	defer func() {
+		<-pl.cx
+		C.glue_dec(pl.thx, av)
+		C.glue_dec(pl.thx, errsv)
+		pl.cx <- true
+	}()
+	if errsv != nil {
+		err := pl.sV(errsv, true)
+		if errf(err) {
+			return
+		} else {
+			panic(err)
+		}
+	}
+
+	if len(rets) > 0 {
+		// copy out rets
 		cb := func(raw *C.gSV, n C.IV) {
-			pl.unsync(func() {
-				lst := sliceOf(raw, int(n))
-				for i, sv := range lst {
-					val := reflect.ValueOf(ptrs[i]).Elem()
-					pl.valSV(&val, sv)
-				}
-			})
+			pl.cx <- true
+			defer func() { <-pl.cx }()
+			lst := sliceOf(raw, int(n))
+			for i, v := range rets {
+				pl.getSV(&v, lst[i], errf)
+			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		pl.sync(func() { C.glue_walkAV(pl.thx, av, ptr) })
+		<-pl.cx
+		C.glue_walkAV(pl.thx, av, ptr)
+		pl.cx <- true
 	}
-	pl.sync(func() { C.glue_dec(pl.thx, av) })
-	return nil
 }
 
 // Live counts the number of live variables in the Perl instance.
@@ -120,329 +177,423 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) error {
 // runtime.GC() must be called to get accurate live value counts.
 func (pl *PL) Live() int {
 	var rv C.IV
-	pl.sync(func() { rv = C.glue_count_live(pl.thx) })
+	<-pl.cx
+	rv = C.glue_count_live(pl.thx)
+	pl.cx <- true
 	return int(rv)
 }
 
-func (pl *PL) newSVval(src reflect.Value) (dst C.gSV) {
+func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
-		val := C.bool(src.Bool())
-		pl.sync(func() { dst = C.glue_newBool(pl.thx, val) })
-		return
+		<-pl.cx
+		C.glue_setBool(pl.thx, ptr, C.bool(src.Bool()))
+		pl.cx <- true
+		return true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		val := C.IV(src.Int())
-		pl.sync(func() { dst = C.glue_newIV(pl.thx, val) })
-		return
+		<-pl.cx
+		C.glue_setIV(pl.thx, ptr, C.IV(src.Int()))
+		pl.cx <- true
+		return true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		val := C.UV(src.Uint())
-		pl.sync(func() { dst = C.glue_newUV(pl.thx, val) })
-		return
+		<-pl.cx
+		C.glue_setUV(pl.thx, ptr, C.UV(src.Uint()))
+		pl.cx <- true
+		return true
 	case reflect.Float32, reflect.Float64:
-		val := C.NV(src.Float())
-		pl.sync(func() { dst = C.glue_newNV(pl.thx, val) })
-		return
+		<-pl.cx
+		C.glue_setNV(pl.thx, ptr, C.NV(src.Float()))
+		pl.cx <- true
+		return true
 	case reflect.Complex64, reflect.Complex128:
 		if pl.newSVcmplx == nil {
 			pl.Eval(`
 				require Math::Complex;
-				sub { my $rv = Math::Complex->new(0, 0); $rv->_set_cartesian([ @_ ]); return $rv; }
+				sub {
+					my $rv = Math::Complex->new(0, 0);
+					$rv->_set_cartesian([ @_ ]);
+					return $rv;
+				}
 			`, &pl.newSVcmplx)
 		}
 		v := src.Complex()
-		return pl.newSVcmplx(real(v), imag(v)).sv
+		sv := pl.newSVcmplx(real(v), imag(v))
+		*ptr = sv.sv
+		return true
 	case reflect.Array,
 		reflect.Slice:
 		lst := make([]C.gSV, 1+src.Len())
 		for i := range lst[0 : len(lst)-1] {
-			lst[i] = pl.newSVval(src.Index(i))
+			if !pl.setSV(&lst[i], src.Index(i), errf) {
+				return false
+			}
 		}
-		pl.sync(func() { dst = C.glue_newAV(pl.thx, &lst[0]) })
-		return
+		<-pl.cx
+		C.glue_setAV(pl.thx, ptr, &lst[0])
+		pl.cx <- true
+		return true
 	case reflect.Chan:
 	case reflect.Func:
 		liveCBSeq++
 		id := C.UV(liveCBSeq)
 		liveCB[liveCBSeq] = func(arg *C.gSV) (ret *C.gSV) {
-			pl.unsync(func() {
-				// xlate args - they are already mortal, don't take
-				// ownership unless they need to survive beyond the
-				// function call
-				args := make([]reflect.Value, t.NumIn())
-				for i, sv := range sliceOf(arg, len(args)) {
-					args[i] = reflect.New(t.In(i)).Elem()
-					pl.valSV(&args[i], sv)
-				}
-				// xlate rets - return as owning references and
-				// glue_invoke() will mortalize them for us
-				ret = C.glue_alloc(C.IV(1 + t.NumOut()))
-				rets := sliceOf(ret, t.NumOut())
-				for i, val := range src.Call(args) {
-					rets[i] = pl.newSVval(val)
-				}
-			})
+			// TODO: need an error proxy
+			pl.cx <- true
+			defer func() { <-pl.cx }()
+			// xlate args - they are already mortal, don't take
+			// ownership unless they need to survive beyond the
+			// function call
+			args := make([]reflect.Value, t.NumIn())
+			for i, sv := range sliceOf(arg, len(args)) {
+				args[i] = reflect.New(t.In(i)).Elem()
+				pl.getSV(&args[i], sv, errf)
+			}
+			// xlate rets - return as owning references and
+			// glue_invoke() will mortalize them for us
+			ret = C.glue_alloc(C.IV(1 + t.NumOut()))
+			rets := sliceOf(ret, t.NumOut())
+			for i, val := range src.Call(args) {
+				pl.setSV(&rets[i], val, errf)
+			}
 			return
 		}
-		pl.sync(func() { dst = C.glue_newCV(pl.thx, id) })
-		return
+		<-pl.cx
+		C.glue_setCV(pl.thx, ptr, id)
+		pl.cx <- true
+		return true
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
 		lst := make([]C.gSV, len(keys)<<1+1)
 		for i, key := range keys {
-			lst[i<<1] = pl.newSVval(key)
-			lst[i<<1+1] = pl.newSVval(src.MapIndex(key))
+			if !pl.setSV(&lst[i<<1], key, errf) {
+				return false
+			}
+			if !pl.setSV(&lst[i<<1+1], src.MapIndex(key), errf) {
+				return false
+			}
 		}
-		pl.sync(func() { dst = C.glue_newHV(pl.thx, &lst[0]) })
-		return
+		<-pl.cx
+		C.glue_setHV(pl.thx, ptr, &lst[0])
+		pl.cx <- true
+		return true
 	case reflect.Ptr:
 		// TODO: *sV handling is a special case, but generic Ptr support
 		// could be implemented
 		if t == reflect.TypeOf((*sV)(nil)) {
-			return src.Interface().(*sV).sv
+			*ptr = src.Interface().(*sV).sv
+			return true
 		}
 	case reflect.String:
 		str := src.String()
-		cs := C.CString(str)
-		cl := C.STRLEN(len(str))
-		pl.sync(func() { dst = C.glue_newPV(pl.thx, cs, cl) })
-		return
+		<-pl.cx
+		C.glue_setPV(pl.thx, ptr, C.CString(str), C.STRLEN(len(str)))
+		pl.cx <- true
+		return true
 	case reflect.Struct:
 		ent := new(liveSTEnt)
 		liveSTSeq++
 		liveST[liveSTSeq] = ent
 		id := C.UV(liveSTSeq)
-		ty := C.CString(t.PkgPath() + "/" + t.Name())
+		nm := C.CString(t.PkgPath() + "/" + t.Name())
 		al := make([]*C.char, 1+t.NumField())
 		ent.getf = func(name *C.char) (rv C.gSV) {
-			pl.unsync(func() {
-				rv = pl.newSVval(src.FieldByName(C.GoString(name)))
-			})
+			// TODO: need an error proxy
+			pl.cx <- true
+			pl.setSV(&rv, src.FieldByName(C.GoString(name)), errf)
+			<-pl.cx
 			return
 		}
 		ent.setf = func(name *C.char, sv C.gSV) {
-			pl.unsync(func() {
-				val := src.FieldByName(C.GoString(name))
-				pl.valSV(&val, sv)
-			})
+			// TODO: need an error proxy
+			pl.cx <- true
+			val := src.FieldByName(C.GoString(name))
+			pl.getSV(&val, sv, errf)
+			<-pl.cx
 		}
 		ent.call = func(name *C.char, arg *C.gSV) (ret *C.gSV) {
-			pl.unsync(func() {
-				m := src.MethodByName(C.GoString(name))
-				mt := m.Type()
-				args := make([]reflect.Value, mt.NumIn())
-				for i, sv := range sliceOf(arg, len(args)) {
-					args[i] = reflect.New(mt.In(i)).Elem()
-					pl.valSV(&args[i], sv)
-				}
-				ret = C.glue_alloc(C.IV(1 + mt.NumOut()))
-				rets := sliceOf(ret, 1+mt.NumOut())
-				for i, val := range m.Call(args) {
-					rets[i] = pl.newSVval(val)
-				}
-			})
+			// TODO: need an error proxy
+			pl.cx <- true
+			m := src.MethodByName(C.GoString(name))
+			mt := m.Type()
+			args := make([]reflect.Value, mt.NumIn())
+			for i, sv := range sliceOf(arg, len(args)) {
+				args[i] = reflect.New(mt.In(i)).Elem()
+				pl.getSV(&args[i], sv, errf)
+			}
+			ret = C.glue_alloc(C.IV(1 + mt.NumOut()))
+			rets := sliceOf(ret, 1+mt.NumOut())
+			for i, val := range m.Call(args) {
+				pl.setSV(&rets[i], val, errf)
+			}
+			<-pl.cx
 			return
 		}
 		ent.live = len(al) /* held by the wrap + each field stub */
 		for i := range al[0 : len(al)-1] {
 			al[i] = C.CString(t.Field(i).Name)
 		}
-		pl.sync(func() { dst = C.glue_newObj(pl.thx, id, ty, &al[0]) })
-		return
+		<-pl.cx
+		C.glue_setObj(pl.thx, ptr, id, nm, &al[0])
+		pl.cx <- true
+		return true
 	case reflect.UnsafePointer:
 	}
-	panic("unhandled type \"" + src.Kind().String() + "\"")
+	err := fmt.Errorf(`unhandled type "%s"`, src.Kind().String())
+	if errf(err) {
+		return false
+	} else {
+		panic(err)
+	}
 }
 
-func (pl *PL) valSV(dst *reflect.Value, src C.gSV) {
+func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 	t := dst.Type()
 	switch t.Kind() {
 	case reflect.Bool:
 		var val C.bool
-		pl.sync(func() { val = C.glue_getBool(pl.thx, src) })
+		<-pl.cx
+		C.glue_getBool(pl.thx, &val, src)
+		pl.cx <- true
 		dst.SetBool(bool(val))
-		return
+		return true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		var val C.IV
-		pl.sync(func() { val = C.glue_getIV(pl.thx, src) })
+		<-pl.cx
+		C.glue_getIV(pl.thx, &val, src)
+		pl.cx <- true
 		dst.SetInt(int64(val))
-		return
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		var val C.UV
-		pl.sync(func() { val = C.glue_getUV(pl.thx, src) })
+		<-pl.cx
+		C.glue_getUV(pl.thx, &val, src)
+		pl.cx <- true
 		dst.SetUint(uint64(val))
-		return
-	case reflect.Uintptr:
-		var val C.UV
-		pl.sync(func() { val = C.glue_getUV(pl.thx, src) })
-		dst.SetUint(uint64(val))
-		return
+		return true
 	case reflect.Float32, reflect.Float64:
 		var val C.NV
-		pl.sync(func() { val = C.glue_getNV(pl.thx, src) })
+		<-pl.cx
+		C.glue_getNV(pl.thx, &val, src)
+		pl.cx <- true
 		dst.SetFloat(float64(val))
-		return
+		return true
 	case reflect.Complex64, reflect.Complex128:
 		if pl.valSVcmplx == nil {
 			pl.Eval(`
 				require Math::Complex;
-				sub { return Math::Complex::Re($_[0]), Math::Complex::Im($_[0]); }
+				sub {
+					return Math::Complex::Re($_[0]), Math::Complex::Im($_[0]);
+				}
 			`, &pl.valSVcmplx)
 		}
+		// TODO: check if errf to decide if callee should panic
 		re, im := pl.valSVcmplx(pl.sV(src, false))
 		dst.SetComplex(complex128(complex(re, im)))
-		return
+		return true
 	case reflect.Array:
 	case reflect.Chan:
 	case reflect.Func:
-		var cv *sV
-		dst.Set(reflect.MakeFunc(t, func(arg []reflect.Value) (ret []reflect.Value) {
+		cv := pl.sV(src, true)
+		dst.Set(reflect.MakeFunc(t, func(arg []reflect.Value) (outs []reflect.Value) {
+			// This ends up looking a lot like Eval(), but we have input
+			// args to convert and an SV instead of a string to execute.
+
+			// first scan outputs, so we can get error handling correct
+			// asap.
+			outs = make([]reflect.Value, t.NumOut())
+			for i := range outs {
+				outs[i] = reflect.New(t.Out(i)).Elem()
+			}
+			ret, errh := splitErrs(outs)
+
 			args := make([]C.gSV, 1+t.NumIn())
 			for i, val := range arg {
-				args[i] = pl.newSVval(val)
-			}
-			rets := make([]C.gSV, 1+t.NumOut())
-
-			var err C.gSV
-			no := C.IV(t.NumOut())
-			pl.sync(func() { err = C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no) })
-
-			ret = make([]reflect.Value, t.NumOut())
-
-			var pErr *sV
-			if err == nil {
-				// copy Perl rets to Go, zero out error rvs
-				j := 0
-				for i := range ret {
-					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
-						ret[i] = reflect.Zero(t.Out(i))
-					} else {
-						ret[i] = reflect.New(t.Out(i)).Elem()
-						pl.valSV(&ret[i], rets[j])
-						j++
-					}
-				}
-			} else {
-				// copy Perl error to Go, zero out data rvs
-				shouldPanic := true
-				for i := range ret {
-					if t.Out(i) == reflect.TypeOf((*error)(nil)).Elem() {
-						ret[i] = reflect.New(t.Out(i)).Elem()
-						pl.valSV(&ret[i], err)
-						shouldPanic = false
-					} else {
-						ret[i] = reflect.Zero(t.Out(i))
-					}
-				}
-				if shouldPanic {
-					pErr = pl.sV(err, true)
+				if !pl.setSV(&args[i], val, errh) {
+					return
 				}
 			}
-			pl.sync(func() {
-				for _, sv := range rets[0 : len(rets)-1] {
+
+			rets := make([]C.gSV, 1+len(ret))
+
+			// make the call
+			no := C.IV(len(ret))
+			<-pl.cx
+			esv := C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no)
+			pl.cx <- true
+			defer func() {
+				<-pl.cx
+				for _, sv := range rets {
 					C.glue_dec(pl.thx, sv)
 				}
-				if err != nil {
-					C.glue_dec(pl.thx, err)
+				C.glue_dec(pl.thx, esv)
+				pl.cx <- true
+			}()
+			if esv != nil {
+				err := pl.sV(esv, true)
+				if errh(err) {
+					return
+				} else {
+					panic(err)
 				}
-			})
-			if pErr != nil {
-				panic(pErr)
+			}
+
+			for i, v := range ret {
+				// try converting rvs
+				if !pl.getSV(&v, rets[i], errh) {
+					return
+				}
 			}
 			return
 		}))
-		cv = pl.sV(src, true)
-		return
+		return true
 	case reflect.Interface:
 		if t == reflect.TypeOf((*error)(nil)).Elem() {
 			dst.Set(reflect.ValueOf(pl.sV(src, true)))
-			return
+			return true
 		}
 	case reflect.Map:
-		cb := func(raw *C.gSV, n int) {
-			pl.unsync(func() {
+		cb := func(raw *C.gSV, iv C.IV) {
+			pl.cx <- true
+			defer func() { <-pl.cx }()
+			n := int(iv)
+			if n >= 0 {
 				dst.Set(reflect.MakeMap(t))
-				if raw == nil {
-					return
-				}
 				var k reflect.Value
-				for i, sv := range sliceOf(raw, int(n)) {
-					if i&1 == 0 {
+				for i, sv := range sliceOf(raw, n) {
+					switch i & 1 {
+					case 0:
 						k = reflect.New(t.Key()).Elem()
-						pl.valSV(&k, sv)
-					} else {
+						if !pl.getSV(&k, sv, errf) {
+							return
+						}
+					case 1:
 						v := reflect.New(t.Elem()).Elem()
-						pl.valSV(&v, sv)
+						if !pl.getSV(&v, sv, errf) {
+							return
+						}
 						dst.SetMapIndex(k, v)
 					}
 				}
-			})
+			} else {
+				err := fmt.Errorf("unable to convert SV to Map")
+				if errf(err) {
+					return
+				} else {
+					panic(err)
+				}
+			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
-		return
+		<-pl.cx
+		C.glue_walkHV(pl.thx, src, ptr)
+		pl.cx <- true
+		return true
 	case reflect.Ptr:
 		// TODO: for now we're only handling *plgo.sV wrapping
 		if t == reflect.TypeOf((*sV)(nil)) {
 			dst.Set(reflect.ValueOf(pl.sV(src, false)))
-			return
+			return true
 		}
 	case reflect.Slice:
-		cb := func(raw *C.gSV, n C.IV) {
-			pl.unsync(func() {
-				dst.Set(reflect.MakeSlice(t, int(n), int(n)))
-				if raw == nil {
-					return
-				}
-				for i, sv := range sliceOf(raw, int(n)) {
+		var err error
+		errh := func(ev error) bool {
+			err = ev
+			return true
+		}
+		cb := func(raw *C.gSV, iv C.IV) {
+			pl.cx <- true
+			defer func() { <-pl.cx }()
+			n := int(iv)
+			if n >= 0 {
+				dst.Set(reflect.MakeSlice(t, n, n))
+				for i, sv := range sliceOf(raw, n) {
 					val := dst.Index(i)
-					pl.valSV(&val, sv)
+					if !pl.getSV(&val, sv, errh) {
+						return
+					}
 				}
-			})
+			} else {
+				errh(fmt.Errorf("unable to convert SV to Slice"))
+				return
+			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		pl.sync(func() { C.glue_walkAV(pl.thx, src, ptr) })
-		return
+		<-pl.cx
+		C.glue_walkAV(pl.thx, src, ptr)
+		pl.cx <- true
+		if err != nil {
+			if errf(err) {
+				return false
+			} else {
+				panic(err)
+			}
+		}
+		return true
 	case reflect.String:
-		var val *C.char
+		var str *C.char
 		var len C.STRLEN
-		pl.sync(func() { val = C.glue_getPV(pl.thx, src, &len) })
-		dst.SetString(C.GoStringN(val, C.int(len)))
-		return
+		<-pl.cx
+		C.glue_getPV(pl.thx, &str, &len, src)
+		pl.cx <- true
+		dst.SetString(C.GoStringN(str, C.int(len)))
+		return true
 	case reflect.Struct:
 		/* TODO: this should also unwrap proxies */
+		var err error
+		errh := func(ev error) bool {
+			err = ev
+			return true
+		}
 		cb := func(raw *C.gSV, n C.IV) {
-			pl.unsync(func() {
-				dst.Set(reflect.New(t).Elem())
-				if raw == nil {
-					return
-				}
-				k := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
-				for i, sv := range sliceOf(raw, int(n)) {
-					if i&1 == 0 {
-						pl.valSV(&k, sv)
-					} else {
-						v := dst.FieldByName(k.String())
-						if v.IsValid() {
-							pl.valSV(&v, sv)
+			pl.cx <- true
+			defer func() { <-pl.cx }()
+			dst.Set(reflect.New(t).Elem())
+			k := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
+			for i, sv := range sliceOf(raw, int(n)) {
+				switch i & 1 {
+				case 0:
+					if !pl.getSV(&k, sv, errh) {
+						return
+					}
+				case 1:
+					v := dst.FieldByName(k.String())
+					if v.IsValid() {
+						if !pl.getSV(&v, sv, errh) {
+							return
 						}
 					}
 				}
-			})
+			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		pl.sync(func() { C.glue_walkHV(pl.thx, src, ptr) })
-		return
-
+		<-pl.cx
+		C.glue_walkHV(pl.thx, src, ptr)
+		pl.cx <- true
+		if err != nil {
+			if errf(err) {
+				return false
+			} else {
+				panic(err)
+			}
+		}
+		return true
 	case reflect.UnsafePointer:
 	}
-	panic("unhandled type \"" + t.Kind().String() + "\"")
+	err := fmt.Errorf(`unhandled type "%v"`, t.Kind().String())
+	if errf(err) {
+		return false
+	} else {
+		panic(err)
+	}
 }
 
 func svFini(sv *sV) {
 	if sv.own {
-		sv.pl.sync(func() { C.glue_dec(sv.pl.thx, sv.sv) })
+		<-sv.pl.cx
+		C.glue_dec(sv.pl.thx, sv.sv)
+		sv.pl.cx <- true
 	}
 }
 
@@ -451,14 +602,19 @@ func (pl *PL) sV(sv C.gSV, own bool) *sV {
 	self.pl = pl
 	self.sv = sv
 	self.own = own
-	pl.sync(func() { C.glue_inc(pl.thx, sv) })
+	<-pl.cx
+	C.glue_inc(pl.thx, sv)
+	pl.cx <- true
 	runtime.SetFinalizer(&self, svFini)
 	return &self
 }
 
 func (sv *sV) Error() string {
 	v := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
-	sv.pl.valSV(&v, sv.sv)
+	sv.pl.getSV(&v, sv.sv, func(err error) bool {
+		// TODO: getSV can return an error, handle it *somehow*
+		return false
+	})
 	return v.String()
 }
 
