@@ -18,7 +18,7 @@ import (
 
 // PL holds a Perl runtime
 type PL struct {
-	thx        C.gPL
+	thx        *C.PerlInterpreter
 	cx         chan bool
 	Preamble   string // prepended to any plgo.Eval() call
 	newSVcmplx func(float64, float64) *sV
@@ -27,7 +27,7 @@ type PL struct {
 
 type sV struct {
 	pl  *PL
-	sv  C.gSV
+	sv  *C.SV
 	own bool
 }
 
@@ -35,9 +35,9 @@ type errFunc func(error) bool
 
 type liveSTEnt struct {
 	live int
-	getf func(*C.char) C.gSV
-	setf func(*C.char, C.gSV)
-	call func(*C.char, *C.gSV) *C.gSV
+	getf func(*C.char) *C.SV
+	setf func(*C.char, *C.SV)
+	call func(*C.char, **C.SV) **C.SV
 }
 
 // We can not reliably hold pointers to Go objects in C
@@ -46,7 +46,7 @@ type liveSTEnt struct {
 // indirection layer.  The live maps will serve this purpose.
 var (
 	liveCBSeq = uint(0)
-	liveCB    = map[uint]func(*C.gSV) *C.gSV{}
+	liveCB    = map[uint]func(**C.SV) **C.SV{}
 	liveSTSeq = uint(0)
 	liveST    = map[uint]*liveSTEnt{}
 )
@@ -67,8 +67,8 @@ func New() *PL {
 	return pl
 }
 
-func sliceOf(raw *C.gSV, n int) []C.gSV {
-	return *(*[]C.gSV)(unsafe.Pointer(&reflect.SliceHeader{
+func sliceOf(raw **C.SV, n int) []*C.SV {
+	return *(*[]*C.SV)(unsafe.Pointer(&reflect.SliceHeader{
 		Data: uintptr(unsafe.Pointer(raw)),
 		Len:  n,
 		Cap:  n,
@@ -79,11 +79,11 @@ func sliceOf(raw *C.gSV, n int) []C.gSV {
  * style we're providing lets the caller decide if we should populate an
  * error object return value, or panic().  We have a helper function to
  * support that convention, but it's still an awkward constraint. */
-var noop_error = fmt.Errorf("noop error")
+var errNoop = fmt.Errorf("noop error")
 
 func splitErrs(rets []reflect.Value) (outs []reflect.Value, ef errFunc) {
 	et := reflect.TypeOf((*error)(nil)).Elem()
-	errs := make([]reflect.Value, 0)
+	var errs []reflect.Value
 	outs = make([]reflect.Value, 0)
 	for _, v := range rets {
 		if v.Type() == et {
@@ -97,12 +97,12 @@ func splitErrs(rets []reflect.Value) (outs []reflect.Value, ef errFunc) {
 	} else {
 		ef = func(ifc error) bool {
 			err := ifc.(error)
-			// this is silly, the noop_error can be sent to this
+			// this is silly, the errNoop can be sent to this
 			// function to detect if error handling is present or if the
 			// caller should instead call panic.  This funciton can't
 			// just call panic for the caller because that would report
 			// the error as happening here. :(
-			if err != noop_error {
+			if err != errNoop {
 				val := reflect.ValueOf(err)
 				for _, v := range errs {
 					v.Set(val)
@@ -119,7 +119,7 @@ func splitErrs(rets []reflect.Value) (outs []reflect.Value, ef errFunc) {
 // Not all types are supported, but many basic types are, including
 // functions.
 func (pl *PL) Eval(text string, ptrs ...interface{}) {
-	var av C.gSV
+	var av *C.SV
 
 	// convert ptrs to Values
 	rets := make([]reflect.Value, len(ptrs))
@@ -136,7 +136,7 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 
 	// run eval()
 	code := C.CString(pl.Preamble + "; [ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
-	var errsv C.gSV
+	var errsv *C.SV
 	<-pl.cx
 	av = C.glue_eval(pl.thx, code, &errsv)
 	pl.cx <- true
@@ -150,14 +150,13 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 		err := pl.sV(errsv, true)
 		if errf(err) {
 			return
-		} else {
-			panic(err)
 		}
+		panic(err)
 	}
 
 	if len(rets) > 0 {
 		// copy out rets
-		cb := func(raw *C.gSV, n C.IV) {
+		cb := func(raw **C.SV, n C.IV) {
 			pl.cx <- true
 			defer func() { <-pl.cx }()
 			lst := sliceOf(raw, int(n))
@@ -183,7 +182,7 @@ func (pl *PL) Live() int {
 	return int(rv)
 }
 
-func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
+func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
@@ -223,7 +222,7 @@ func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 		return true
 	case reflect.Array,
 		reflect.Slice:
-		lst := make([]C.gSV, 1+src.Len())
+		lst := make([]*C.SV, 1+src.Len())
 		for i := range lst[0 : len(lst)-1] {
 			if !pl.setSV(&lst[i], src.Index(i), errf) {
 				return false
@@ -237,7 +236,7 @@ func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 	case reflect.Func:
 		liveCBSeq++
 		id := C.UV(liveCBSeq)
-		liveCB[liveCBSeq] = func(arg *C.gSV) (ret *C.gSV) {
+		liveCB[liveCBSeq] = func(arg **C.SV) (ret **C.SV) {
 			// TODO: need an error proxy
 			pl.cx <- true
 			defer func() { <-pl.cx }()
@@ -265,7 +264,7 @@ func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 	case reflect.Interface:
 	case reflect.Map:
 		keys := src.MapKeys()
-		lst := make([]C.gSV, len(keys)<<1+1)
+		lst := make([]*C.SV, len(keys)<<1+1)
 		for i, key := range keys {
 			if !pl.setSV(&lst[i<<1], key, errf) {
 				return false
@@ -298,21 +297,21 @@ func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 		id := C.UV(liveSTSeq)
 		nm := C.CString(t.PkgPath() + "/" + t.Name())
 		al := make([]*C.char, 1+t.NumField())
-		ent.getf = func(name *C.char) (rv C.gSV) {
+		ent.getf = func(name *C.char) (rv *C.SV) {
 			// TODO: need an error proxy
 			pl.cx <- true
 			pl.setSV(&rv, src.FieldByName(C.GoString(name)), errf)
 			<-pl.cx
 			return
 		}
-		ent.setf = func(name *C.char, sv C.gSV) {
+		ent.setf = func(name *C.char, sv *C.SV) {
 			// TODO: need an error proxy
 			pl.cx <- true
 			val := src.FieldByName(C.GoString(name))
 			pl.getSV(&val, sv, errf)
 			<-pl.cx
 		}
-		ent.call = func(name *C.char, arg *C.gSV) (ret *C.gSV) {
+		ent.call = func(name *C.char, arg **C.SV) (ret **C.SV) {
 			// TODO: need an error proxy
 			pl.cx <- true
 			m := src.MethodByName(C.GoString(name))
@@ -343,12 +342,11 @@ func (pl *PL) setSV(ptr *C.gSV, src reflect.Value, errf errFunc) bool {
 	err := fmt.Errorf(`unhandled type "%s"`, src.Kind().String())
 	if errf(err) {
 		return false
-	} else {
-		panic(err)
 	}
+	panic(err)
 }
 
-func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
+func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	t := dst.Type()
 	switch t.Kind() {
 	case reflect.Bool:
@@ -408,14 +406,14 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 			}
 			ret, errh := splitErrs(outs)
 
-			args := make([]C.gSV, 1+t.NumIn())
+			args := make([]*C.SV, 1+t.NumIn())
 			for i, val := range arg {
 				if !pl.setSV(&args[i], val, errh) {
 					return
 				}
 			}
 
-			rets := make([]C.gSV, 1+len(ret))
+			rets := make([]*C.SV, 1+len(ret))
 
 			// make the call
 			no := C.IV(len(ret))
@@ -434,9 +432,8 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 				err := pl.sV(esv, true)
 				if errh(err) {
 					return
-				} else {
-					panic(err)
 				}
+				panic(err)
 			}
 
 			for i, v := range ret {
@@ -454,7 +451,7 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 			return true
 		}
 	case reflect.Map:
-		cb := func(raw *C.gSV, iv C.IV) {
+		cb := func(raw **C.SV, iv C.IV) {
 			pl.cx <- true
 			defer func() { <-pl.cx }()
 			n := int(iv)
@@ -480,9 +477,8 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 				err := fmt.Errorf("unable to convert SV to Map")
 				if errf(err) {
 					return
-				} else {
-					panic(err)
 				}
+				panic(err)
 			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
@@ -502,7 +498,7 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 			err = ev
 			return true
 		}
-		cb := func(raw *C.gSV, iv C.IV) {
+		cb := func(raw **C.SV, iv C.IV) {
 			pl.cx <- true
 			defer func() { <-pl.cx }()
 			n := int(iv)
@@ -526,9 +522,8 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 		if err != nil {
 			if errf(err) {
 				return false
-			} else {
-				panic(err)
 			}
+			panic(err)
 		}
 		return true
 	case reflect.String:
@@ -546,7 +541,7 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 			err = ev
 			return true
 		}
-		cb := func(raw *C.gSV, n C.IV) {
+		cb := func(raw **C.SV, n C.IV) {
 			pl.cx <- true
 			defer func() { <-pl.cx }()
 			dst.Set(reflect.New(t).Elem())
@@ -574,9 +569,8 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 		if err != nil {
 			if errf(err) {
 				return false
-			} else {
-				panic(err)
 			}
+			panic(err)
 		}
 		return true
 	case reflect.UnsafePointer:
@@ -584,9 +578,8 @@ func (pl *PL) getSV(dst *reflect.Value, src C.gSV, errf errFunc) bool {
 	err := fmt.Errorf(`unhandled type "%v"`, t.Kind().String())
 	if errf(err) {
 		return false
-	} else {
-		panic(err)
 	}
+	panic(err)
 }
 
 func svFini(sv *sV) {
@@ -597,7 +590,7 @@ func svFini(sv *sV) {
 	}
 }
 
-func (pl *PL) sV(sv C.gSV, own bool) *sV {
+func (pl *PL) sV(sv *C.SV, own bool) *sV {
 	var self sV
 	self.pl = pl
 	self.sv = sv
@@ -619,12 +612,12 @@ func (sv *sV) Error() string {
 }
 
 //export goList
-func goList(cb uintptr, lst *C.gSV, n C.IV) {
-	(*(*func(*C.gSV, C.IV))(unsafe.Pointer(cb)))(lst, n)
+func goList(cb uintptr, lst **C.SV, n C.IV) {
+	(*(*func(**C.SV, C.IV))(unsafe.Pointer(cb)))(lst, n)
 }
 
 //export goInvoke
-func goInvoke(data uint, arg *C.gSV) *C.gSV {
+func goInvoke(data uint, arg **C.SV) **C.SV {
 	return liveCB[data](arg)
 }
 
@@ -634,17 +627,17 @@ func goReleaseCB(data uint) {
 }
 
 //export goSTGetf
-func goSTGetf(id uint, name *C.char) C.gSV {
+func goSTGetf(id uint, name *C.char) *C.SV {
 	return liveST[id].getf(name)
 }
 
 //export goSTSetf
-func goSTSetf(id uint, name *C.char, sv C.gSV) {
+func goSTSetf(id uint, name *C.char, sv *C.SV) {
 	liveST[id].setf(name, sv)
 }
 
 //export goSTCall
-func goSTCall(id uint, name *C.char, arg *C.gSV) *C.gSV {
+func goSTCall(id uint, name *C.char, arg **C.SV) **C.SV {
 	return liveST[id].call(name, arg)
 }
 
