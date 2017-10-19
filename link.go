@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"unsafe"
+	"sync"
 )
 
 // PL holds a Perl runtime
@@ -49,6 +50,7 @@ var (
 	liveCB    = map[uint]func(**C.SV) **C.SV{}
 	liveSTSeq = uint(0)
 	liveST    = map[uint]*liveSTEnt{}
+	liveMX	  = &sync.RWMutex{}
 )
 
 func plFini(pl *PL) {
@@ -234,9 +236,7 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 		return true
 	case reflect.Chan:
 	case reflect.Func:
-		liveCBSeq++
-		id := C.UV(liveCBSeq)
-		liveCB[liveCBSeq] = func(arg **C.SV) (ret **C.SV) {
+		call := func(arg **C.SV) (ret **C.SV) {
 			// TODO: need an error proxy
 			pl.cx <- true
 			defer func() { <-pl.cx }()
@@ -257,8 +257,13 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 			}
 			return
 		}
+		liveMX.Lock();
+		liveCBSeq++
+		id := liveCBSeq
+		liveCB[liveCBSeq] = call
+		liveMX.Unlock()
 		<-pl.cx
-		C.glue_setCV(pl.thx, ptr, id)
+		C.glue_setCV(pl.thx, ptr, C.UV(id))
 		pl.cx <- true
 		return true
 	case reflect.Interface:
@@ -292,9 +297,11 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 		return true
 	case reflect.Struct:
 		ent := new(liveSTEnt)
+		liveMX.Lock()
 		liveSTSeq++
 		liveST[liveSTSeq] = ent
-		id := C.UV(liveSTSeq)
+		id := liveSTSeq
+		liveMX.Unlock()
 		nm := C.CString(t.PkgPath() + "/" + t.Name())
 		al := make([]*C.char, 1+t.NumField())
 		ent.getf = func(name *C.char) (rv *C.SV) {
@@ -334,7 +341,7 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 			al[i] = C.CString(t.Field(i).Name)
 		}
 		<-pl.cx
-		C.glue_setObj(pl.thx, ptr, id, nm, &al[0])
+		C.glue_setObj(pl.thx, ptr, C.UV(id), nm, &al[0])
 		pl.cx <- true
 		return true
 	case reflect.UnsafePointer:
@@ -618,34 +625,49 @@ func goList(cb uintptr, lst **C.SV, n C.IV) {
 
 //export goInvoke
 func goInvoke(data uint, arg **C.SV) **C.SV {
-	return liveCB[data](arg)
+	liveMX.RLock()
+	call := liveCB[data]
+	liveMX.RUnlock()
+	return call(arg)
 }
 
 //export goReleaseCB
 func goReleaseCB(data uint) {
+	liveMX.Lock()
 	delete(liveCB, data)
+	liveMX.Unlock()
 }
 
 //export goSTGetf
 func goSTGetf(id uint, name *C.char) *C.SV {
-	return liveST[id].getf(name)
+	liveMX.RLock()
+	ent := liveST[id]
+	liveMX.RUnlock()
+	return ent.getf(name)
 }
 
 //export goSTSetf
 func goSTSetf(id uint, name *C.char, sv *C.SV) {
-	liveST[id].setf(name, sv)
+	liveMX.RLock()
+	ent := liveST[id]
+	liveMX.RUnlock()
+	ent.setf(name, sv)
 }
 
 //export goSTCall
 func goSTCall(id uint, name *C.char, arg **C.SV) **C.SV {
-	return liveST[id].call(name, arg)
+	liveMX.RLock()
+	ent := liveST[id]
+	liveMX.RUnlock()
+	return ent.call(name, arg)
 }
 
 //export goReleaseST
 func goReleaseST(id uint) {
+	liveMX.Lock();
 	liveST[id].live--
-	if liveST[id].live > 0 {
-		return
+	if liveST[id].live <= 0 {
+		delete(liveST, id)
 	}
-	delete(liveST, id)
+	liveMX.Unlock();
 }
