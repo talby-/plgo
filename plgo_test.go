@@ -2,7 +2,7 @@ package plgo_test
 
 import (
 	"fmt"
-	"git.dev.whs/talby/plgo"
+	"github.com/tlby/plgo"
 	"math"
 	"math/cmplx"
 	"reflect"
@@ -62,75 +62,65 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 	body := fmt.Sprintf(`(sub {}, sub {%s})`, txt)
 	switch val := obj.(type) {
 	case bool:
-		var v bool
 		var ifn func(bool)
 		var ofn func() bool
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case int:
-		var v int
 		var ifn func(int)
 		var ofn func() int
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case uint:
-		var v uint
 		var ifn func(uint)
 		var ofn func() uint
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case float64:
-		var v float64
 		var ifn func(float64)
 		var ofn func() float64
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case complex128:
-		var v complex128
 		var ifn func(complex128)
 		var ofn func() complex128
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case AMap:
-		var v AMap
 		var ifn func(AMap)
 		var ofn func() AMap
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case AList:
-		var v AList
 		var ifn func(AList)
 		var ofn func() AList
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case string:
-		var v string
 		var ifn func(string)
 		var ofn func() string
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case AFunc:
-		var v AFunc
 		var ifn func(AFunc)
 		var ofn func() AFunc
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	case AStruct:
-		var v AStruct
 		var ifn func(AStruct)
 		var ofn func() AStruct
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
-		rvFn = func() { v = ofn() }
+		rvFn = func() { _ = ofn() }
 	default:
 		t.Errorf("unsupported type for leak check")
 	}

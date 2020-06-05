@@ -11,9 +11,13 @@ sub trim {
 
 my($fn) = @ARGV;
 
+# CVE-2018-6574: cgo no longer allows some linker flags
+my $ccopts = trim(ExtUtils::Embed::ccopts());
+my $ldopts = trim(ExtUtils::Embed::ldopts()) =~ s/-[Wf]\S*\s*//sgr;
+
 my $hdr = qq{/*
-#cgo CFLAGS: -Wall ${\ trim(ExtUtils::Embed::ccopts()) }
-#cgo LDFLAGS: ${\ trim(ExtUtils::Embed::ldopts()) }
+#cgo CFLAGS: -Wall $ccopts
+#cgo LDFLAGS: $ldopts
 #include "glue.h"
 */
 import "C"};
