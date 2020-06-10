@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 use strict;
 use warnings;
 use ExtUtils::Embed ();
@@ -11,8 +11,9 @@ sub trim {
 
 my($fn) = @ARGV;
 
+ExtUtils::Embed::xsinit(undef, undef, []);
 # CVE-2018-6574: cgo no longer allows some linker flags
-my $ccopts = trim(ExtUtils::Embed::ccopts());
+my $ccopts = trim(ExtUtils::Embed::ccopts()) =~ s/-fwrapv\s*//sgr;
 my $ldopts = trim(ExtUtils::Embed::ldopts()) =~ s/-[Wf]\S*\s*//sgr;
 
 my $hdr = qq{/*

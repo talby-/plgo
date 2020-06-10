@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"unsafe"
 	"sync"
+	"unsafe"
 )
 
 // PL holds a Perl runtime
@@ -39,6 +39,12 @@ type liveSTEnt struct {
 	getf func(*C.char) *C.SV
 	setf func(*C.char, *C.SV)
 	call func(*C.char, **C.SV) **C.SV
+	src  reflect.Value
+}
+
+type liveCBEnt struct {
+	call func(**C.SV) **C.SV
+	orig reflect.Value
 }
 
 // We can not reliably hold pointers to Go objects in C
@@ -47,16 +53,16 @@ type liveSTEnt struct {
 // indirection layer.  The live maps will serve this purpose.
 var (
 	liveCBSeq = uint(0)
-	liveCB    = map[uint]func(**C.SV) **C.SV{}
+	liveCB    = map[uint]*liveCBEnt{}
 	liveSTSeq = uint(0)
 	liveST    = map[uint]*liveSTEnt{}
-	liveMX	  = &sync.RWMutex{}
+	liveMX    = &sync.RWMutex{}
 )
 
 func plFini(pl *PL) {
-	<-pl.cx
+	pl.enter()
 	C.glue_fini(pl.thx)
-	pl.cx <- true
+	pl.leave()
 }
 
 // New initializes a Perl runtime
@@ -139,14 +145,14 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 	// run eval()
 	code := C.CString(pl.Preamble + "; [ do { \n#line 1 \"plgo.Eval()\"\n" + text + "\n } ]")
 	var errsv *C.SV
-	<-pl.cx
+	pl.enter()
 	av = C.glue_eval(pl.thx, code, &errsv)
-	pl.cx <- true
+	pl.leave()
 	defer func() {
-		<-pl.cx
+		pl.enter()
 		C.glue_dec(pl.thx, av)
 		C.glue_dec(pl.thx, errsv)
-		pl.cx <- true
+		pl.leave()
 	}()
 	if errsv != nil {
 		err := pl.sV(errsv, true)
@@ -159,18 +165,29 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 	if len(rets) > 0 {
 		// copy out rets
 		cb := func(raw **C.SV, n C.IV) {
-			pl.cx <- true
-			defer func() { <-pl.cx }()
+			pl.leave()
+			defer pl.enter()
 			lst := sliceOf(raw, int(n))
 			for i, v := range rets {
 				pl.getSV(&v, lst[i], errf)
 			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		<-pl.cx
+		pl.enter()
 		C.glue_walkAV(pl.thx, av, ptr)
-		pl.cx <- true
+		pl.leave()
 	}
+}
+
+// use this before any batch of C.glue_* calls
+func (pl *PL) enter() {
+	<-pl.cx
+	C.glue_setContext(pl.thx)
+}
+
+// use this after any batch of C.glue_* calls
+func (pl *PL) leave() {
+	pl.cx <- true
 }
 
 // Live counts the number of live variables in the Perl instance.
@@ -178,9 +195,9 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 // runtime.GC() must be called to get accurate live value counts.
 func (pl *PL) Live() int {
 	var rv C.IV
-	<-pl.cx
+	pl.enter()
 	rv = C.glue_count_live(pl.thx)
-	pl.cx <- true
+	pl.leave()
 	return int(rv)
 }
 
@@ -188,24 +205,24 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 	t := src.Type()
 	switch src.Kind() {
 	case reflect.Bool:
-		<-pl.cx
+		pl.enter()
 		C.glue_setBool(pl.thx, ptr, C.bool(src.Bool()))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		<-pl.cx
+		pl.enter()
 		C.glue_setIV(pl.thx, ptr, C.IV(src.Int()))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		<-pl.cx
+		pl.enter()
 		C.glue_setUV(pl.thx, ptr, C.UV(src.Uint()))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Float32, reflect.Float64:
-		<-pl.cx
+		pl.enter()
 		C.glue_setNV(pl.thx, ptr, C.NV(src.Float()))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Complex64, reflect.Complex128:
 		if pl.newSVcmplx == nil {
@@ -230,16 +247,16 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 				return false
 			}
 		}
-		<-pl.cx
+		pl.enter()
 		C.glue_setAV(pl.thx, ptr, &lst[0])
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Chan:
 	case reflect.Func:
 		call := func(arg **C.SV) (ret **C.SV) {
 			// TODO: need an error proxy
-			pl.cx <- true
-			defer func() { <-pl.cx }()
+			pl.leave()
+			defer pl.enter()
 			// xlate args - they are already mortal, don't take
 			// ownership unless they need to survive beyond the
 			// function call
@@ -257,14 +274,14 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 			}
 			return
 		}
-		liveMX.Lock();
+		liveMX.Lock()
 		liveCBSeq++
 		id := liveCBSeq
-		liveCB[liveCBSeq] = call
+		liveCB[liveCBSeq] = &liveCBEnt{call, src}
 		liveMX.Unlock()
-		<-pl.cx
+		pl.enter()
 		C.glue_setCV(pl.thx, ptr, C.UV(id))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Interface:
 	case reflect.Map:
@@ -278,9 +295,9 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 				return false
 			}
 		}
-		<-pl.cx
+		pl.enter()
 		C.glue_setHV(pl.thx, ptr, &lst[0])
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Ptr:
 		// TODO: *sV handling is a special case, but generic Ptr support
@@ -291,9 +308,9 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 		}
 	case reflect.String:
 		str := src.String()
-		<-pl.cx
+		pl.enter()
 		C.glue_setPV(pl.thx, ptr, C.CString(str), C.STRLEN(len(str)))
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Struct:
 		ent := new(liveSTEnt)
@@ -306,21 +323,22 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 		al := make([]*C.char, 1+t.NumField())
 		ent.getf = func(name *C.char) (rv *C.SV) {
 			// TODO: need an error proxy
-			pl.cx <- true
+			pl.leave()
+			defer pl.enter()
 			pl.setSV(&rv, src.FieldByName(C.GoString(name)), errf)
-			<-pl.cx
 			return
 		}
 		ent.setf = func(name *C.char, sv *C.SV) {
 			// TODO: need an error proxy
-			pl.cx <- true
+			pl.leave()
+			defer pl.enter()
 			val := src.FieldByName(C.GoString(name))
 			pl.getSV(&val, sv, errf)
-			<-pl.cx
 		}
 		ent.call = func(name *C.char, arg **C.SV) (ret **C.SV) {
 			// TODO: need an error proxy
-			pl.cx <- true
+			pl.leave()
+			defer pl.enter()
 			m := src.MethodByName(C.GoString(name))
 			mt := m.Type()
 			args := make([]reflect.Value, mt.NumIn())
@@ -333,16 +351,16 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 			for i, val := range m.Call(args) {
 				pl.setSV(&rets[i], val, errf)
 			}
-			<-pl.cx
 			return
 		}
+		ent.src = src
 		ent.live = len(al) /* held by the wrap + each field stub */
 		for i := range al[0 : len(al)-1] {
 			al[i] = C.CString(t.Field(i).Name)
 		}
-		<-pl.cx
+		pl.enter()
 		C.glue_setObj(pl.thx, ptr, C.UV(id), nm, &al[0])
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.UnsafePointer:
 	}
@@ -358,30 +376,30 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	switch t.Kind() {
 	case reflect.Bool:
 		var val C.bool
-		<-pl.cx
+		pl.enter()
 		C.glue_getBool(pl.thx, &val, src)
-		pl.cx <- true
+		pl.leave()
 		dst.SetBool(bool(val))
 		return true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		var val C.IV
-		<-pl.cx
+		pl.enter()
 		C.glue_getIV(pl.thx, &val, src)
-		pl.cx <- true
+		pl.leave()
 		dst.SetInt(int64(val))
 		return true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		var val C.UV
-		<-pl.cx
+		pl.enter()
 		C.glue_getUV(pl.thx, &val, src)
-		pl.cx <- true
+		pl.leave()
 		dst.SetUint(uint64(val))
 		return true
 	case reflect.Float32, reflect.Float64:
 		var val C.NV
-		<-pl.cx
+		pl.enter()
 		C.glue_getNV(pl.thx, &val, src)
-		pl.cx <- true
+		pl.leave()
 		dst.SetFloat(float64(val))
 		return true
 	case reflect.Complex64, reflect.Complex128:
@@ -400,6 +418,20 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	case reflect.Array:
 	case reflect.Chan:
 	case reflect.Func:
+		// Did this come from Go in the first place?
+		var id C.UV
+		var has_id C.bool
+		pl.enter()
+		has_id = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
+		pl.leave()
+		if bool(has_id) {
+			liveMX.RLock()
+			ent := liveCB[uint(id)]
+			liveMX.RUnlock()
+			dst.Set(ent.orig)
+			return true
+		}
+		// if not, try to translate
 		cv := pl.sV(src, true)
 		dst.Set(reflect.MakeFunc(t, func(arg []reflect.Value) (outs []reflect.Value) {
 			// This ends up looking a lot like Eval(), but we have input
@@ -423,17 +455,18 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 			rets := make([]*C.SV, 1+len(ret))
 
 			// make the call
-			no := C.IV(len(ret))
-			<-pl.cx
-			esv := C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no)
-			pl.cx <- true
+			no := C.UV(len(ret))
+			var esv *C.SV
+			pl.enter()
+			esv = C.glue_call_sv(pl.thx, cv.sv, &args[0], &rets[0], no)
+			pl.leave()
 			defer func() {
-				<-pl.cx
+				pl.enter()
 				for _, sv := range rets {
 					C.glue_dec(pl.thx, sv)
 				}
 				C.glue_dec(pl.thx, esv)
-				pl.cx <- true
+				pl.leave()
 			}()
 			if esv != nil {
 				err := pl.sV(esv, true)
@@ -459,8 +492,8 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 		}
 	case reflect.Map:
 		cb := func(raw **C.SV, iv C.IV) {
-			pl.cx <- true
-			defer func() { <-pl.cx }()
+			pl.leave()
+			defer pl.enter()
 			n := int(iv)
 			if n >= 0 {
 				dst.Set(reflect.MakeMap(t))
@@ -489,9 +522,9 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		<-pl.cx
+		pl.enter()
 		C.glue_walkHV(pl.thx, src, ptr)
-		pl.cx <- true
+		pl.leave()
 		return true
 	case reflect.Ptr:
 		// TODO: for now we're only handling *plgo.sV wrapping
@@ -506,8 +539,8 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 			return true
 		}
 		cb := func(raw **C.SV, iv C.IV) {
-			pl.cx <- true
-			defer func() { <-pl.cx }()
+			pl.leave()
+			defer pl.enter()
 			n := int(iv)
 			if n >= 0 {
 				dst.Set(reflect.MakeSlice(t, n, n))
@@ -523,9 +556,9 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		<-pl.cx
+		pl.enter()
 		C.glue_walkAV(pl.thx, src, ptr)
-		pl.cx <- true
+		pl.leave()
 		if err != nil {
 			if errf(err) {
 				return false
@@ -536,21 +569,34 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	case reflect.String:
 		var str *C.char
 		var len C.STRLEN
-		<-pl.cx
+		pl.enter()
 		C.glue_getPV(pl.thx, &str, &len, src)
-		pl.cx <- true
+		pl.leave()
 		dst.SetString(C.GoStringN(str, C.int(len)))
 		return true
 	case reflect.Struct:
-		/* TODO: this should also unwrap proxies */
+		// Did this come from Go in the first place?
+		var id C.UV
+		var has_id C.bool
+		pl.enter()
+		has_id = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
+		pl.leave()
+		if bool(has_id) {
+			liveMX.RLock()
+			ent := liveST[uint(id)]
+			liveMX.RUnlock()
+			dst.Set(ent.src)
+			return true
+		}
+		// if not, try to translate
 		var err error
 		errh := func(ev error) bool {
 			err = ev
 			return true
 		}
 		cb := func(raw **C.SV, n C.IV) {
-			pl.cx <- true
-			defer func() { <-pl.cx }()
+			pl.leave()
+			defer pl.enter()
 			dst.Set(reflect.New(t).Elem())
 			k := reflect.New(reflect.TypeOf((*string)(nil)).Elem()).Elem()
 			for i, sv := range sliceOf(raw, int(n)) {
@@ -570,9 +616,9 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 			}
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
-		<-pl.cx
+		pl.enter()
 		C.glue_walkHV(pl.thx, src, ptr)
-		pl.cx <- true
+		pl.leave()
 		if err != nil {
 			if errf(err) {
 				return false
@@ -591,9 +637,9 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 
 func svFini(sv *sV) {
 	if sv.own {
-		<-sv.pl.cx
+		sv.pl.enter()
 		C.glue_dec(sv.pl.thx, sv.sv)
-		sv.pl.cx <- true
+		sv.pl.leave()
 	}
 }
 
@@ -602,9 +648,9 @@ func (pl *PL) sV(sv *C.SV, own bool) *sV {
 	self.pl = pl
 	self.sv = sv
 	self.own = own
-	<-pl.cx
+	pl.enter()
 	C.glue_inc(pl.thx, sv)
-	pl.cx <- true
+	pl.leave()
 	runtime.SetFinalizer(&self, svFini)
 	return &self
 }
@@ -626,9 +672,9 @@ func goList(cb uintptr, lst **C.SV, n C.IV) {
 //export goInvoke
 func goInvoke(data uint, arg **C.SV) **C.SV {
 	liveMX.RLock()
-	call := liveCB[data]
+	ent := liveCB[data]
 	liveMX.RUnlock()
-	return call(arg)
+	return ent.call(arg)
 }
 
 //export goReleaseCB
@@ -664,10 +710,10 @@ func goSTCall(id uint, name *C.char, arg **C.SV) **C.SV {
 
 //export goReleaseST
 func goReleaseST(id uint) {
-	liveMX.Lock();
+	liveMX.Lock()
 	liveST[id].live--
 	if liveST[id].live <= 0 {
 		delete(liveST, id)
 	}
-	liveMX.Unlock();
+	liveMX.Unlock()
 }

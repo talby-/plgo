@@ -8,7 +8,7 @@ tTHX glue_init();
 void glue_fini(pTHX);
 
 SV *glue_eval(pTHX_ char *, SV **);
-SV *glue_call_sv(pTHX_ SV *, SV **, SV **, IV);
+SV *glue_call_sv(pTHX_ SV *, SV **, SV **, UV);
 
 void glue_inc(pTHX_ SV *);
 void glue_dec(pTHX_ SV *);
@@ -35,3 +35,5 @@ void glue_setAV(pTHX_ SV **, SV **);
 void glue_setHV(pTHX_ SV **, SV **);
 void glue_setCV(pTHX_ SV **, UV);
 void glue_setObj(pTHX_ SV **, UV, char *, char **);
+bool glue_getId(pTHX_ SV *, UV *, const char *);
+void glue_setContext(pTHX);

@@ -7,11 +7,7 @@
  * allocated and caller freed so that the go side isn't peppered with
  * tons of defer calls */
 
-extern void boot_DynaLoader (pTHX_ CV *cv);
-
-static void xs_init(pTHX) {
-    newXS("DynaLoader::boot_DynaLoader", boot_DynaLoader, __FILE__);
-}
+void xs_init (pTHX); /* provided by perlxsi.c */
 
 /* A little macro nuttiness to get Perl errors report the correct file
  * and line. */
@@ -44,7 +40,6 @@ typedef struct {
 } glue_st_t;
 
 static int vtbl_st_sv_free(pTHX_ SV *sv, MAGIC *mg) {
-    PERL_SET_CONTEXT(my_perl);
     glue_st_t *st = (glue_st_t *)mg->mg_ptr;
     goReleaseST(st->st_id);
     if(st->st_fname)
@@ -128,13 +123,11 @@ tTHX glue_init() {
 }
 
 void glue_fini(pTHX) {
-    PERL_SET_CONTEXT(my_perl);
     perl_destruct(my_perl);
     perl_free(my_perl);
 }
 
 SV *glue_eval(pTHX_ char *text, SV **errp) {
-    PERL_SET_CONTEXT(my_perl);
     SV *rv;
     ENTER;
     SAVETMPS;
@@ -151,14 +144,14 @@ SV *glue_eval(pTHX_ char *text, SV **errp) {
     return rv;
 }
 
-SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, IV n) {
+SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, UV n) {
     I32 ax;
     I32 count;
     dSP;
     int flags;
     SV *err;
+    UV i = 0;
 
-    PERL_SET_CONTEXT(my_perl);
     switch(n) {
       case 0: flags = G_VOID; break;
       case 1: flags = G_SCALAR; break;
@@ -180,34 +173,35 @@ SV *glue_call_sv(pTHX_ SV *sv, SV **arg, SV **ret, IV n) {
     if(SvTRUE(ERRSV)) {
         err = newSVsv(ERRSV);
     } else {
-        int i;
-        for(i = 0; i < count && i < n; i++) {
+        while(i < count && i < n) {
             ret[i] = ST(i);
             // callee passes mortal rets, caller wants ownership
             SvREFCNT_inc(ret[i]);
+            i++;
         }
         err = NULL;
     }
     PUTBACK;
     FREETMPS;
     LEAVE;
+    if(i < n)
+        memset(ret + i, '\0', sizeof(SV *) * (n - i));
     return err;
 }
 
 void glue_inc(pTHX_ SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     SvREFCNT_inc(sv);
 }
 
 void glue_dec(pTHX_ SV *sv) {
-    if(sv == NULL)
+    /* Go might hand us a null ptr because we sometimes return a null in
+     * place of ERRSV to mean no error occured. */
+    if(!sv)
         return;
-    PERL_SET_CONTEXT(my_perl);
     SvREFCNT_dec(sv);
 }
 
 IV glue_count_live(pTHX) {
-    PERL_SET_CONTEXT(my_perl);
     /* Devel::Leak proved to be too expensive to run during scans, so
      * this lifts a bit of it's algorithm for something to give us
      * simple live variable allocation counts */
@@ -226,32 +220,26 @@ SV **glue_alloc(IV n) {
 }
 
 void glue_dump(pTHX_ SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     sv_dump(sv);
 }
 
 void glue_getBool(pTHX_ bool *dst, SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     *dst = SvTRUE(sv);
 }
 
 void glue_getIV(pTHX_ IV *dst, SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     *dst = SvIV(sv);
 }
 
 void glue_getUV(pTHX_ UV *dst, SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     *dst = SvUV(sv);
 }
 
 void glue_getNV(pTHX_ NV *dst, SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     *dst = SvNV(sv);
 }
 
 void glue_getPV(pTHX_ char **dst, STRLEN *len, SV *sv) {
-    PERL_SET_CONTEXT(my_perl);
     *dst = SvPV(sv, *len);
 }
 
@@ -259,7 +247,6 @@ void glue_walkAV(pTHX_ SV *sv, UV data) {
     SV **lst = NULL;
     I32 len = -1;
 
-    PERL_SET_CONTEXT(my_perl);
     SAVETMPS;
     if(SvROK(sv)) {
         AV *av = (AV *)SvRV(sv);
@@ -276,7 +263,6 @@ void glue_walkHV(pTHX_ SV *sv, UV data) {
     IV len = -1;
     SV **lst = NULL;
 
-    PERL_SET_CONTEXT(my_perl);
     SAVETMPS;
     if(SvROK(sv)) {
         HV *hv = (HV *)SvRV(sv);
@@ -297,33 +283,26 @@ void glue_walkHV(pTHX_ SV *sv, UV data) {
 }
 
 void glue_setBool(pTHX_ SV **ptr, bool v) {
-    PERL_SET_CONTEXT(my_perl);
-
     if(!*ptr) *ptr = newSV(0);
     SvSetSV(*ptr, boolSV(v));
 }
 
 void glue_setIV(pTHX_ SV **ptr, IV v) {
-    PERL_SET_CONTEXT(my_perl);
-
     if(!*ptr) *ptr = newSV(0);
     sv_setiv(*ptr, v);
 }
 
 void glue_setUV(pTHX_ SV **ptr, UV v) {
-    PERL_SET_CONTEXT(my_perl);
     if(!*ptr) *ptr = newSV(0);
     sv_setuv(*ptr, v);
 }
 
 void glue_setNV(pTHX_ SV **ptr, NV v) {
-    PERL_SET_CONTEXT(my_perl);
     if(!*ptr) *ptr = newSV(0);
     sv_setnv(*ptr, v);
 }
 
 void glue_setPV(pTHX_ SV **ptr, char *str, STRLEN len) {
-    PERL_SET_CONTEXT(my_perl);
     if(!*ptr) *ptr = newSV(len);
     sv_setpvn(*ptr, str, len);
     free(str);
@@ -336,7 +315,6 @@ static inline void setRV(pTHX_ SV **ptr, SV *elt) {
 }
 
 void glue_setAV(pTHX_ SV **ptr, SV **lst) {
-    PERL_SET_CONTEXT(my_perl);
     AV *av = newAV();
     while(*lst)
         av_push(av, *lst++);
@@ -344,7 +322,6 @@ void glue_setAV(pTHX_ SV **ptr, SV **lst) {
 }
 
 void glue_setHV(pTHX_ SV **ptr, SV **lst) {
-    PERL_SET_CONTEXT(my_perl);
     HV *hv = newHV();
     while(*lst) {
         SV *k = *lst++;
@@ -358,7 +335,6 @@ void glue_setHV(pTHX_ SV **ptr, SV **lst) {
 
 /* When Perl releases our CV we should notify Go */
 static int vtbl_cb_sv_free(pTHX_ SV *sv, MAGIC *mg) {
-    PERL_SET_CONTEXT(my_perl);
     UV id = (UV)mg->mg_ptr;
     goReleaseCB(id);
     return 0;
@@ -392,7 +368,6 @@ XS(glue_invoke)
 
 /* Tie a CV to glue_invoke() and stash the Go details */
 void glue_setCV(pTHX_ SV **ptr, UV id) {
-    PERL_SET_CONTEXT(my_perl);
     CV *cv = newXS(NULL, glue_invoke, __FILE__);
     sv_magicext((SV *)cv, 0, PERL_MAGIC_ext, &vtbl_cb, (char *)id, 0);
     setRV(aTHX_ (SV **)ptr, (SV *)cv);
@@ -404,13 +379,11 @@ void glue_setObj(pTHX_ SV **ptr, UV id, char *gotype, char **attrs) {
     HV *hv;
     SV *sv;
     glue_st_t st;
-    PERL_SET_CONTEXT(my_perl);
 
     SAVETMPS;
     hv = newHV();
     setRV(aTHX_ (SV **)ptr, (SV *)hv);
     sv = *ptr;
-
 
     //ENTER;
     //PUSHMARK(SP);
@@ -442,4 +415,31 @@ void glue_setObj(pTHX_ SV **ptr, UV id, char *gotype, char **attrs) {
     /* slots in the hv are filled, now lock it */
     SvREADONLY_on((SV *)hv);
     FREETMPS;
+}
+
+bool glue_getId(pTHX_ SV *sv, UV *id, const char *kind) {
+    MAGIC *mg;
+    if(strcmp(kind, "func") == 0) {
+        SV *cv = SvRV(sv);
+        if(!SvMAGICAL(cv))
+            return FALSE;
+        if(!(mg = mg_findext(cv, PERL_MAGIC_ext, &vtbl_cb)))
+            return FALSE;
+        *id = (UV)mg->mg_ptr;
+        return TRUE;
+    }
+    if(strcmp(kind, "struct") == 0) {
+        if(!SvMAGICAL(sv))
+            return FALSE;
+        if(!(mg = mg_findext(sv, PERL_MAGIC_ext, &vtbl_st)))
+            return FALSE;
+        glue_st_t *st = (glue_st_t *)mg->mg_ptr;
+        *id = st->st_id;
+        return TRUE;
+    }
+    croak("Unsupported kind %s", kind);
+}
+
+void glue_setContext(pTHX) {
+    PERL_SET_CONTEXT(my_perl);
 }

@@ -533,15 +533,37 @@ func TestComplex128(t *testing.T) {
 func TestFunc(t *testing.T) {
 	var id func(AFunc) AFunc
 	pl.Eval(`sub { $_[0] }`, &id)
+	// there should be no proxy, have and want should be the *same*
+	// function
 	ok := func(want AFunc) {
 		have := id(want)
-		if have(18) != want(18) {
+		hptr := reflect.ValueOf(have).Pointer()
+		wptr := reflect.ValueOf(want).Pointer()
+		if hptr != wptr {
 			t.Errorf("id(%v func() int) => %v", want, have)
 		}
 	}
 	ok(func(v int) int {
 		return v + 54321
 	})
+
+	pl.Eval(`sub {
+		my($code) = @_;
+		return sub { $code->(@_) };
+	}`, &id)
+	// there should be a wrap, have and want should behave the same
+	// though
+	ok = func(want AFunc) {
+		have := id(want)
+		if have(18) != want(18) {
+			t.Errorf("id(%v func() int) => %v", want, have)
+		}
+		hptr := reflect.ValueOf(have).Pointer()
+		wptr := reflect.ValueOf(want).Pointer()
+		if hptr == wptr {
+			t.Errorf("no wrap: %v == %v", want, have)
+		}
+	}
 
 	// GC on Go closures appears to be unpredictable
 	//leak(t, 1024, func() { }, `sub {}`)
