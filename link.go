@@ -428,11 +428,11 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	case reflect.Func:
 		// Did this come from Go in the first place?
 		var id C.UV
-		var has_id C.bool
+		var hasID C.bool
 		pl.enter()
-		has_id = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
+		hasID = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
 		pl.leave()
-		if bool(has_id) {
+		if bool(hasID) {
 			liveMX.RLock()
 			ent := liveCB[uint(id)]
 			liveMX.RUnlock()
@@ -585,11 +585,11 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 	case reflect.Struct:
 		// Did this come from Go in the first place?
 		var id C.UV
-		var has_id C.bool
+		var hasID C.bool
 		pl.enter()
-		has_id = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
+		hasID = C.glue_getId(pl.thx, src, &id, C.CString(t.Kind().String()))
 		pl.leave()
-		if bool(has_id) {
+		if bool(hasID) {
 			liveMX.RLock()
 			ent := liveST[uint(id)]
 			liveMX.RUnlock()
