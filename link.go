@@ -174,7 +174,7 @@ func (pl *PL) Eval(text string, ptrs ...interface{}) {
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
 		pl.enter()
-		C.glue_walkAV(pl.thx, av, ptr)
+		C.glue_walkAV(pl.thx, av, ptr, false)
 		pl.leave()
 	}
 }
@@ -241,6 +241,14 @@ func (pl *PL) setSV(ptr **C.SV, src reflect.Value, errf errFunc) bool {
 		return true
 	case reflect.Array,
 		reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			// []byte is special
+			lala := src.Bytes()
+			pl.enter()
+			C.glue_setPVB(pl.thx, ptr, C.CBytes(lala), C.STRLEN(src.Len()))
+			pl.leave()
+			return true
+		}
 		lst := make([]*C.SV, 1+src.Len())
 		for i := range lst[0 : len(lst)-1] {
 			if !pl.setSV(&lst[i], src.Index(i), errf) {
@@ -557,7 +565,7 @@ func (pl *PL) getSV(dst *reflect.Value, src *C.SV, errf errFunc) bool {
 		}
 		ptr := C.UV(uintptr(unsafe.Pointer(&cb)))
 		pl.enter()
-		C.glue_walkAV(pl.thx, src, ptr)
+		C.glue_walkAV(pl.thx, src, ptr, true)
 		pl.leave()
 		if err != nil {
 			if errf(err) {

@@ -10,6 +10,7 @@ import (
 )
 
 type AList []int
+type ABuf []byte
 type AMap map[int]int
 type AStruct struct {
 	I int
@@ -118,6 +119,12 @@ func leak(t *testing.T, n int, obj interface{}, txt string) {
 	case AStruct:
 		var ifn func(AStruct)
 		var ofn func() AStruct
+		pl.Eval(body, &ifn, &ofn)
+		inFn = func() { ifn(val) }
+		rvFn = func() { _ = ofn() }
+	case ABuf:
+		var ifn func(ABuf)
+		var ofn func() ABuf
 		pl.Eval(body, &ifn, &ofn)
 		inFn = func() { ifn(val) }
 		rvFn = func() { _ = ofn() }
@@ -622,6 +629,29 @@ func TestList(t *testing.T) {
 	leak(t, 1024, AList{17, 18}, `[ 19, 20 ]`)
 }
 
+func TestBuf(t *testing.T) {
+	var id func(ABuf) ABuf
+	pl.Eval(`sub { $_[0] }`, &id)
+	ok := func(want ABuf) {
+		have := id(want)
+		if !reflect.DeepEqual(have, want) {
+			t.Errorf("id(%v []byte) => %v", want, have)
+		}
+	}
+	ok(ABuf{})
+	ok(ABuf{'c', 'a', 't'})
+
+	var cnv func(ABuf) string
+	pl.Eval(`sub { $_[0] }`, &cnv)
+	have := cnv(ABuf{'h', 'e', 'l', 'l', 'o'})
+	want := "hello"
+	if !reflect.DeepEqual(have, want) {
+		t.Errorf("cnv(%v []byte) => %v", want, have)
+	}
+
+	leak(t, 1024, ABuf{'x', 'y'}, `"xy"`)
+}
+
 func TestString(t *testing.T) {
 	var id func(string) string
 	pl.Eval(`sub { $_[0] }`, &id)
@@ -777,6 +807,17 @@ func BenchmarkInList(b *testing.B) {
 	}
 }
 
+func BenchmarkInBuf(b *testing.B) {
+	v := ABuf{'a', 'b', 'c', 'd'}
+	var fn func(ABuf)
+	pl.Eval(`sub {}`, &fn)
+	fn(v)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn(v)
+	}
+}
+
 func BenchmarkInString(b *testing.B) {
 	v := "tippy"
 	var fn func(string)
@@ -876,6 +917,16 @@ func BenchmarkRvMap(b *testing.B) {
 func BenchmarkRvList(b *testing.B) {
 	var fn func() AList
 	pl.Eval(`sub { [ qw(1 2 3 4) ] }`, &fn)
+	fn()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fn()
+	}
+}
+
+func BenchmarkRvBuf(b *testing.B) {
+	var fn func() ABuf
+	pl.Eval(`sub { "abcd" }`, &fn)
 	fn()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

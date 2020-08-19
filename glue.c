@@ -243,7 +243,7 @@ void glue_getPV(pTHX_ char **dst, STRLEN *len, SV *sv) {
     *dst = SvPV(sv, *len);
 }
 
-void glue_walkAV(pTHX_ SV *sv, UV data) {
+void glue_walkAV(pTHX_ SV *sv, UV data, bool bytes) {
     SV **lst = NULL;
     I32 len = -1;
 
@@ -254,6 +254,18 @@ void glue_walkAV(pTHX_ SV *sv, UV data) {
             lst = AvARRAY(av);
             len = 1 + av_top_index(av);
         }
+    } else if(bytes && SvPOK(sv)) {
+        /* this is a special case for allowing strings to feed into
+         * []byte values.
+         * TODO: It would be nice to avoid all these temp SVs, but I
+         * guess it's no worse than [ split '', $s ]. */
+        STRLEN i, l;
+        const char *s = SvPV(sv, l);
+        lst = alloca(len * sizeof(SV *));
+        for(i = 0; i < l; i++) {
+            lst[i] = sv_2mortal(newSVuv(s[i]));
+        }
+        len = l;
     }
     goList(data, lst, len);
     FREETMPS;
@@ -303,6 +315,12 @@ void glue_setNV(pTHX_ SV **ptr, NV v) {
 }
 
 void glue_setPV(pTHX_ SV **ptr, char *str, STRLEN len) {
+    if(!*ptr) *ptr = newSV(len);
+    sv_setpvn(*ptr, str, len);
+    free(str);
+}
+
+void glue_setPVB(pTHX_ SV **ptr, void *str, STRLEN len) {
     if(!*ptr) *ptr = newSV(len);
     sv_setpvn(*ptr, str, len);
     free(str);

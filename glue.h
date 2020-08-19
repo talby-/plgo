@@ -23,7 +23,7 @@ void glue_getUV(pTHX_ UV *, SV *);
 void glue_getNV(pTHX_ NV *, SV *);
 void glue_getPV(pTHX_ char **, STRLEN *, SV *);
 
-void glue_walkAV(pTHX_ SV *, UV);
+void glue_walkAV(pTHX_ SV *, UV, bool);
 void glue_walkHV(pTHX_ SV *, UV);
 
 void glue_setBool(pTHX_ SV **, bool);
@@ -31,6 +31,7 @@ void glue_setIV(pTHX_ SV **, IV);
 void glue_setUV(pTHX_ SV **, UV);
 void glue_setNV(pTHX_ SV **, NV);
 void glue_setPV(pTHX_ SV **, char *, STRLEN);
+void glue_setPVB(pTHX_ SV **, void *, STRLEN);
 void glue_setAV(pTHX_ SV **, SV **);
 void glue_setHV(pTHX_ SV **, SV **);
 void glue_setCV(pTHX_ SV **, UV);
